@@ -295,6 +295,10 @@ export function getCurrentTripIdentity(): TripRecord {
   return cloneTrip(mostRecentActiveTrip);
 }
 
+export function getAllTripIdentities(): readonly TripRecord[] {
+  return state.trips.map(cloneTrip);
+}
+
 export function getTripMembers(tripId: string): readonly TripMember[] {
   return state.tripMembers.filter((member) => member.tripId === tripId).map(cloneTripMember);
 }
