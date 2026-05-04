@@ -28,6 +28,8 @@ export type LedgerEntry = {
   readonly amount: number;
   readonly paidBy: string;
   readonly createdAt: string;
+  readonly categoryParentId: string;
+  readonly categorySubcategoryId?: string;
 };
 
 const currentTrip: CurrentTrip = {
@@ -59,7 +61,9 @@ const ledgerEntries: readonly LedgerEntry[] = [
     label: "Metro cards",
     amount: 29.5,
     paidBy: "Soham",
-    createdAt: "2026-05-01T09:30:00Z"
+    createdAt: "2026-05-01T09:30:00Z",
+    categoryParentId: "transport",
+    categorySubcategoryId: "transit"
   },
   {
     id: "entry-002",
@@ -67,7 +71,9 @@ const ledgerEntries: readonly LedgerEntry[] = [
     label: "Apartment deposit",
     amount: 120,
     paidBy: "Ava",
-    createdAt: "2026-05-02T14:15:00Z"
+    createdAt: "2026-05-02T14:15:00Z",
+    categoryParentId: "stay",
+    categorySubcategoryId: "deposit"
   }
 ];
 
