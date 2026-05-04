@@ -51,6 +51,7 @@ export type PackingList = {
 
 export type LedgerEntryStatus = "categorized" | "imported-uncategorized";
 export type LedgerEntrySource = "manual" | "email" | "webhook";
+export type LedgerEntrySyncStatus = "synced" | "pending";
 
 export type LedgerEntry = {
   readonly id: string;
@@ -63,8 +64,86 @@ export type LedgerEntry = {
   readonly categorySubcategoryId?: string;
   readonly status: LedgerEntryStatus;
   readonly source: LedgerEntrySource;
+  readonly syncStatus: LedgerEntrySyncStatus;
+  readonly isCash?: boolean;
+  readonly deletedAt?: string;
+  readonly deletedByTripMemberId?: string;
   readonly updatedByTripMemberId?: string;
 };
+
+export type LedgerActivityType =
+  | "manual-cash-entry-added"
+  | "manual-entry-sync-confirmed"
+  | "imported-entry-categorized"
+  | "imported-entry-uncategorized"
+  | "soft-delete"
+  | "hard-delete";
+
+export type LedgerActivity = {
+  readonly id: string;
+  readonly tripId: string;
+  readonly ledgerEntryId?: string;
+  readonly actingTripMemberId: string;
+  readonly type: LedgerActivityType;
+  readonly message: string;
+  readonly createdAt: string;
+};
+
+export type AddManualCashLedgerEntryInput = {
+  readonly label: string;
+  readonly amount: number;
+  readonly paidBy: string;
+  readonly actingTripMemberId: string;
+};
+
+export type ConfirmManualLedgerEntrySyncInput = {
+  readonly ledgerEntryId: string;
+  readonly actingTripMemberId: string;
+};
+
+export type SoftDeleteLedgerEntryInput = {
+  readonly ledgerEntryId: string;
+  readonly actingTripMemberId: string;
+};
+
+export type HardDeleteLedgerEntryInput = {
+  readonly ledgerEntryId: string;
+  readonly actingTripMemberId: string;
+};
+
+type LedgerEditLock = {
+  readonly id: string;
+  readonly tripId: string;
+  readonly ledgerEntryId: string;
+  readonly actingTripMemberId: string;
+  readonly acquiredAt: string;
+  readonly expiresAt: string;
+};
+
+export type RequestLedgerEntryEditLockInput = {
+  readonly ledgerEntryId: string;
+  readonly actingTripMemberId: string;
+  readonly nowIso?: string;
+};
+
+export type ConfirmLedgerEntryEditLockInput = {
+  readonly ledgerEntryId: string;
+  readonly actingTripMemberId: string;
+  readonly lockId: string;
+  readonly nowIso?: string;
+};
+
+export type RequestLedgerEntryEditLockResult =
+  | {
+      readonly status: "granted";
+      readonly lockId: string;
+      readonly expiresAt: string;
+    }
+  | {
+      readonly status: "conflict";
+      readonly prompt: string;
+      readonly expiresAt: string;
+    };
 
 export type IngestSharedExpenseAlertInput = {
   readonly source: "email" | "webhook";
@@ -163,6 +242,8 @@ type CurrentTripStoreState = {
   listsByTrip: Record<string, TripList[]>;
   ledgerEntriesByTrip: Record<string, LedgerEntry[]>;
   failedLogsByTrip: Record<string, FailedExpenseIngestionLog[]>;
+  ledgerActivityByTrip: Record<string, LedgerActivity[]>;
+  ledgerEditLocksByTrip: Record<string, LedgerEditLock[]>;
 };
 
 function cloneListItem(item: TripListItem): TripListItem {
@@ -190,6 +271,10 @@ function cloneFailedLog(log: FailedExpenseIngestionLog): FailedExpenseIngestionL
   return { ...log };
 }
 
+function cloneLedgerActivity(activity: LedgerActivity): LedgerActivity {
+  return { ...activity };
+}
+
 function buildInitialState(): CurrentTripStoreState {
   return {
     sequence: 300,
@@ -209,7 +294,8 @@ function buildInitialState(): CurrentTripStoreState {
           categoryParentId: "transport",
           categorySubcategoryId: "transit",
           status: "categorized",
-          source: "manual"
+          source: "manual",
+          syncStatus: "synced"
         },
         {
           id: "entry-002",
@@ -221,11 +307,18 @@ function buildInitialState(): CurrentTripStoreState {
           categoryParentId: "stay",
           categorySubcategoryId: "deposit",
           status: "categorized",
-          source: "manual"
+          source: "manual",
+          syncStatus: "synced"
         }
       ]
     },
     failedLogsByTrip: {
+      "trip-active-001": []
+    },
+    ledgerActivityByTrip: {
+      "trip-active-001": []
+    },
+    ledgerEditLocksByTrip: {
       "trip-active-001": []
     }
   };
@@ -257,6 +350,20 @@ function nextListItemId(): string {
 function nextVoiceCandidateId(): string {
   state.voiceCandidateSequence += 1;
   return `voice-candidate-${String(state.voiceCandidateSequence).padStart(4, "0")}`;
+}
+
+const EDIT_LOCK_DURATION_MS = 30_000;
+
+function toIso(input?: string): string {
+  if (!input) {
+    return new Date().toISOString();
+  }
+
+  return new Date(input).toISOString();
+}
+
+function lockExpiryIso(nowIso: string): string {
+  return new Date(Date.parse(nowIso) + EDIT_LOCK_DURATION_MS).toISOString();
 }
 
 function getActiveTripId(): string {
@@ -298,6 +405,49 @@ function assertTripMember(tripId: string, tripMemberId: string): void {
   if (!isMember) {
     throw new Error(`Only a trip member can review shared expenses for trip ${tripId}`);
   }
+}
+
+function getPrimaryAdminTripMemberId(tripId: string): string {
+  const primaryMemberId = getTripMembers(tripId)[0]?.id;
+
+  if (!primaryMemberId) {
+    throw new Error(`Primary admin is unavailable for trip ${tripId}`);
+  }
+
+  return primaryMemberId;
+}
+
+function findLedgerEntryIndex(tripId: string, ledgerEntryId: string): number {
+  const entries = state.ledgerEntriesByTrip[tripId] ?? [];
+  return entries.findIndex((entry) => entry.id === ledgerEntryId);
+}
+
+function ensureLedgerEditLocks(tripId: string): LedgerEditLock[] {
+  if (!state.ledgerEditLocksByTrip[tripId]) {
+    state.ledgerEditLocksByTrip[tripId] = [];
+  }
+
+  return state.ledgerEditLocksByTrip[tripId] ?? [];
+}
+
+function removeExpiredEditLocks(tripId: string, nowIso: string): void {
+  const existingLocks = ensureLedgerEditLocks(tripId);
+  state.ledgerEditLocksByTrip[tripId] = existingLocks.filter(
+    (lock) => Date.parse(lock.expiresAt) > Date.parse(nowIso)
+  );
+}
+
+function appendLedgerActivity(activity: Omit<LedgerActivity, "id" | "createdAt">): void {
+  const createdAt = nextTimestamp();
+  const tripActivities = state.ledgerActivityByTrip[activity.tripId] ?? [];
+
+  const nextActivity: LedgerActivity = {
+    id: nextId("ledger-activity"),
+    createdAt,
+    ...activity
+  };
+
+  state.ledgerActivityByTrip[activity.tripId] = [...tripActivities, nextActivity];
 }
 
 function normalizeItemLabel(value: string): string {
@@ -621,7 +771,254 @@ export function getListSuggestions(kind: TripListKind, query: string): readonly 
 
 export function getLedgerEntries(): readonly LedgerEntry[] {
   const tripId = getActiveTripId();
-  return (state.ledgerEntriesByTrip[tripId] ?? []).map(cloneLedgerEntry);
+  return [...(state.ledgerEntriesByTrip[tripId] ?? [])]
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .map(cloneLedgerEntry);
+}
+
+export function getLedgerActivityHistory(input: {
+  readonly actingTripMemberId: string;
+}): readonly LedgerActivity[] {
+  const tripId = getActiveTripId();
+  assertTripMember(tripId, input.actingTripMemberId);
+
+  return [...(state.ledgerActivityByTrip[tripId] ?? [])]
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .map(cloneLedgerActivity);
+}
+
+export function requestLedgerEntryEditLock(
+  input: RequestLedgerEntryEditLockInput
+): RequestLedgerEntryEditLockResult {
+  const tripId = getActiveTripId();
+  assertTripMember(tripId, input.actingTripMemberId);
+
+  const expenseIndex = findLedgerEntryIndex(tripId, input.ledgerEntryId);
+
+  if (expenseIndex < 0) {
+    throw new Error(`Ledger entry not found: ${input.ledgerEntryId}`);
+  }
+
+  const nowIso = toIso(input.nowIso);
+  removeExpiredEditLocks(tripId, nowIso);
+
+  const tripLocks = ensureLedgerEditLocks(tripId);
+  const existingLock = tripLocks.find((lock) => lock.ledgerEntryId === input.ledgerEntryId);
+
+  if (existingLock && existingLock.actingTripMemberId !== input.actingTripMemberId) {
+    const lockOwner =
+      getTripMembers(tripId).find((member) => member.id === existingLock.actingTripMemberId)?.displayName ??
+      "another member";
+
+    return {
+      status: "conflict",
+      prompt: `${lockOwner} is already editing this entry. Try again after lock expiry.`,
+      expiresAt: existingLock.expiresAt
+    };
+  }
+
+  const updatedLock: LedgerEditLock = {
+    id: existingLock?.id ?? nextId("ledger-lock"),
+    tripId,
+    ledgerEntryId: input.ledgerEntryId,
+    actingTripMemberId: input.actingTripMemberId,
+    acquiredAt: nowIso,
+    expiresAt: lockExpiryIso(nowIso)
+  };
+
+  state.ledgerEditLocksByTrip[tripId] = [
+    ...tripLocks.filter((lock) => lock.ledgerEntryId !== input.ledgerEntryId),
+    updatedLock
+  ];
+
+  notifySubscribers();
+
+  return {
+    status: "granted",
+    lockId: updatedLock.id,
+    expiresAt: updatedLock.expiresAt
+  };
+}
+
+export function confirmLedgerEntryEditLock(input: ConfirmLedgerEntryEditLockInput): void {
+  const tripId = getActiveTripId();
+  assertTripMember(tripId, input.actingTripMemberId);
+
+  const nowIso = toIso(input.nowIso);
+  removeExpiredEditLocks(tripId, nowIso);
+
+  const tripLocks = ensureLedgerEditLocks(tripId);
+  const matchingLock = tripLocks.find(
+    (lock) =>
+      lock.id === input.lockId &&
+      lock.ledgerEntryId === input.ledgerEntryId &&
+      lock.actingTripMemberId === input.actingTripMemberId
+  );
+
+  if (!matchingLock) {
+    throw new Error(`Edit lock not found for entry ${input.ledgerEntryId}`);
+  }
+
+  state.ledgerEditLocksByTrip[tripId] = tripLocks.filter((lock) => lock.id !== input.lockId);
+  notifySubscribers();
+}
+
+export function addManualCashLedgerEntry(input: AddManualCashLedgerEntryInput): LedgerEntry {
+  const tripId = getActiveTripId();
+  assertTripMember(tripId, input.actingTripMemberId);
+
+  const label = input.label.trim();
+  const paidBy = input.paidBy.trim();
+
+  if (!label) {
+    throw new Error("Manual cash entry requires a label");
+  }
+
+  if (!paidBy) {
+    throw new Error("Manual cash entry requires who paid");
+  }
+
+  if (!Number.isFinite(input.amount) || input.amount <= 0) {
+    throw new Error("Manual cash entry requires a positive amount");
+  }
+
+  const manualEntry: LedgerEntry = {
+    id: nextId("entry-manual"),
+    tripId,
+    label,
+    amount: input.amount,
+    paidBy,
+    createdAt: nextTimestamp(),
+    status: "categorized",
+    source: "manual",
+    syncStatus: "pending",
+    isCash: true,
+    updatedByTripMemberId: input.actingTripMemberId
+  };
+
+  state.ledgerEntriesByTrip[tripId] = [...(state.ledgerEntriesByTrip[tripId] ?? []), manualEntry];
+  appendLedgerActivity({
+    tripId,
+    ledgerEntryId: manualEntry.id,
+    actingTripMemberId: input.actingTripMemberId,
+    type: "manual-cash-entry-added",
+    message: `Added manual cash entry "${manualEntry.label}".`
+  });
+  notifySubscribers();
+
+  return cloneLedgerEntry(manualEntry);
+}
+
+export function confirmManualLedgerEntrySync(input: ConfirmManualLedgerEntrySyncInput): LedgerEntry {
+  const tripId = getActiveTripId();
+  assertTripMember(tripId, input.actingTripMemberId);
+
+  const entries = state.ledgerEntriesByTrip[tripId] ?? [];
+  const expenseIndex = entries.findIndex((entry) => entry.id === input.ledgerEntryId);
+
+  if (expenseIndex < 0) {
+    throw new Error(`Ledger entry not found: ${input.ledgerEntryId}`);
+  }
+
+  const target = entries[expenseIndex];
+
+  if (!target || target.source !== "manual" || !target.isCash) {
+    throw new Error(`Manual cash entry not found: ${input.ledgerEntryId}`);
+  }
+
+  const syncedEntry: LedgerEntry = {
+    ...target,
+    syncStatus: "synced",
+    updatedByTripMemberId: input.actingTripMemberId
+  };
+
+  entries[expenseIndex] = syncedEntry;
+  appendLedgerActivity({
+    tripId,
+    ledgerEntryId: syncedEntry.id,
+    actingTripMemberId: input.actingTripMemberId,
+    type: "manual-entry-sync-confirmed",
+    message: `Confirmed sync for manual entry "${syncedEntry.label}".`
+  });
+  notifySubscribers();
+
+  return cloneLedgerEntry(syncedEntry);
+}
+
+export function softDeleteLedgerEntry(input: SoftDeleteLedgerEntryInput): LedgerEntry {
+  const tripId = getActiveTripId();
+  assertTripMember(tripId, input.actingTripMemberId);
+
+  const entries = state.ledgerEntriesByTrip[tripId] ?? [];
+  const expenseIndex = entries.findIndex((entry) => entry.id === input.ledgerEntryId);
+
+  if (expenseIndex < 0) {
+    throw new Error(`Ledger entry not found: ${input.ledgerEntryId}`);
+  }
+
+  const target = entries[expenseIndex];
+
+  if (!target) {
+    throw new Error(`Ledger entry not found: ${input.ledgerEntryId}`);
+  }
+
+  if (target.deletedAt) {
+    return cloneLedgerEntry(target);
+  }
+
+  const deleted: LedgerEntry = {
+    ...target,
+    deletedAt: nextTimestamp(),
+    deletedByTripMemberId: input.actingTripMemberId,
+    updatedByTripMemberId: input.actingTripMemberId
+  };
+
+  entries[expenseIndex] = deleted;
+  appendLedgerActivity({
+    tripId,
+    ledgerEntryId: deleted.id,
+    actingTripMemberId: input.actingTripMemberId,
+    type: "soft-delete",
+    message: `Soft deleted ledger entry "${deleted.label}".`
+  });
+  notifySubscribers();
+
+  return cloneLedgerEntry(deleted);
+}
+
+export function hardDeleteLedgerEntry(input: HardDeleteLedgerEntryInput): void {
+  const tripId = getActiveTripId();
+  assertTripMember(tripId, input.actingTripMemberId);
+
+  if (input.actingTripMemberId !== getPrimaryAdminTripMemberId(tripId)) {
+    throw new Error("Hard delete is allowed for the primary admin only");
+  }
+
+  const entries = state.ledgerEntriesByTrip[tripId] ?? [];
+  const expenseIndex = entries.findIndex((entry) => entry.id === input.ledgerEntryId);
+
+  if (expenseIndex < 0) {
+    throw new Error(`Ledger entry not found: ${input.ledgerEntryId}`);
+  }
+
+  const removedEntry = entries[expenseIndex];
+
+  if (!removedEntry) {
+    throw new Error(`Ledger entry not found: ${input.ledgerEntryId}`);
+  }
+
+  state.ledgerEntriesByTrip[tripId] = entries.filter((entry) => entry.id !== input.ledgerEntryId);
+  state.ledgerEditLocksByTrip[tripId] = ensureLedgerEditLocks(tripId).filter(
+    (lock) => lock.ledgerEntryId !== input.ledgerEntryId
+  );
+  appendLedgerActivity({
+    tripId,
+    ledgerEntryId: input.ledgerEntryId,
+    actingTripMemberId: input.actingTripMemberId,
+    type: "hard-delete",
+    message: `Hard deleted ledger entry "${removedEntry.label}".`
+  });
+  notifySubscribers();
 }
 
 export function getNeedsReviewExpenses(): readonly LedgerEntry[] {
@@ -665,7 +1062,8 @@ export function ingestSharedExpenseAlert(input: IngestSharedExpenseAlertInput): 
     paidBy: "Imported alert",
     createdAt: parsed.timestamp,
     status: "imported-uncategorized",
-    source: input.source
+    source: input.source,
+    syncStatus: "synced"
   };
 
   state.ledgerEntriesByTrip[tripId] = [...(state.ledgerEntriesByTrip[tripId] ?? []), importedExpense];
@@ -700,6 +1098,13 @@ export function categorizeImportedExpense(input: CategorizeImportedExpenseInput)
   };
 
   entries[expenseIndex] = categorized;
+  appendLedgerActivity({
+    tripId,
+    ledgerEntryId: categorized.id,
+    actingTripMemberId: input.actingTripMemberId,
+    type: "imported-entry-categorized",
+    message: `Categorized imported entry "${categorized.label}".`
+  });
   notifySubscribers();
 
   return cloneLedgerEntry(categorized);
@@ -731,6 +1136,13 @@ export function uncategorizeImportedExpense(input: UncategorizedImportedExpenseI
   };
 
   entries[expenseIndex] = uncategorized;
+  appendLedgerActivity({
+    tripId,
+    ledgerEntryId: uncategorized.id,
+    actingTripMemberId: input.actingTripMemberId,
+    type: "imported-entry-uncategorized",
+    message: `Marked imported entry "${uncategorized.label}" as uncategorized.`
+  });
   notifySubscribers();
 
   return cloneLedgerEntry(uncategorized);

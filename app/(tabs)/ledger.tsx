@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 
 import {
+  addManualCashLedgerEntry,
   categorizeImportedExpense,
+  confirmLedgerEntryEditLock,
   getCurrentTrip,
   getFailedExpenseIngestionLog,
+  getLedgerActivityHistory,
   getLedgerEntries,
   getNeedsReviewExpenses,
+  requestLedgerEntryEditLock,
   subscribeCurrentTripStore,
   uncategorizeImportedExpense
 } from "@/data/currentTripStore";
@@ -26,10 +30,19 @@ export default function LedgerScreen() {
   useEffect(() => subscribeCurrentTripStore(() => setStoreRevision((value) => value + 1)), []);
 
   const trip = getCurrentTrip();
-  const tripMemberId = getTripMembers(trip.id)[0]?.id;
+  const tripMembers = getTripMembers(trip.id);
+  const tripMemberId = tripMembers[0]?.id;
   const entries = getLedgerEntries();
   const failedLog = getFailedExpenseIngestionLog();
   const needsReviewRows = buildLedgerFeedRows(getNeedsReviewExpenses(), trip.currency);
+  const activityHistory = tripMemberId ? getLedgerActivityHistory({ actingTripMemberId: tripMemberId }) : [];
+
+  const [manualLabel, setManualLabel] = useState("");
+  const [manualAmount, setManualAmount] = useState("");
+  const [manualPaidBy, setManualPaidBy] = useState(tripMembers[0]?.displayName ?? "");
+  const [entryMessage, setEntryMessage] = useState<string>();
+  const [lockPrompt, setLockPrompt] = useState<string>();
+
   const [categorySheetOpen, setCategorySheetOpen] = useState(false);
   const [reviewSheetExpenseId, setReviewSheetExpenseId] = useState<string>();
   const [selectedParentId, setSelectedParentId] = useState<string | undefined>();
@@ -57,9 +70,86 @@ export default function LedgerScreen() {
   const selectedReviewExpense = entries.find((entry) => entry.id === reviewSheetExpenseId);
   const selectedLabel = resolveCategoryLabel(selectedParentId, selectedSubcategoryId);
 
+  function reserveSharedEditLock(ledgerEntryId: string): string | null {
+    if (!tripMemberId) {
+      return null;
+    }
+
+    const lock = requestLedgerEntryEditLock({
+      ledgerEntryId,
+      actingTripMemberId: tripMemberId
+    });
+
+    if (lock.status === "conflict") {
+      setLockPrompt(`${lock.prompt} Lock expires at ${lock.expiresAt}.`);
+      return null;
+    }
+
+    setLockPrompt(undefined);
+    return lock.lockId;
+  }
+
   return (
     <TripScreenShell title="Ledger" subtitle="Shared spending for the current trip">
       <ScrollView className="flex-1" contentContainerClassName="gap-3 pb-6">
+        <View className="rounded-2xl border border-amber-100 bg-white p-3">
+          <Text className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Manual cash entry</Text>
+          <TextInput
+            value={manualLabel}
+            onChangeText={setManualLabel}
+            placeholder="What was paid"
+            className="mt-2 rounded-xl border border-amber-100 px-3 py-2 text-sm text-zinc-900"
+          />
+          <TextInput
+            value={manualAmount}
+            onChangeText={setManualAmount}
+            placeholder="Amount"
+            keyboardType="decimal-pad"
+            className="mt-2 rounded-xl border border-amber-100 px-3 py-2 text-sm text-zinc-900"
+          />
+          <TextInput
+            value={manualPaidBy}
+            onChangeText={setManualPaidBy}
+            placeholder="Paid by"
+            className="mt-2 rounded-xl border border-amber-100 px-3 py-2 text-sm text-zinc-900"
+          />
+          <Pressable
+            onPress={() => {
+              if (!tripMemberId) {
+                return;
+              }
+
+              const amount = Number.parseFloat(manualAmount);
+
+              try {
+                addManualCashLedgerEntry({
+                  label: manualLabel,
+                  amount,
+                  paidBy: manualPaidBy,
+                  actingTripMemberId: tripMemberId
+                });
+                setManualLabel("");
+                setManualAmount("");
+                setEntryMessage("Cash entry saved as pending sync.");
+              } catch (error) {
+                setEntryMessage(error instanceof Error ? error.message : "Unable to add manual cash entry.");
+              }
+            }}
+            className="mt-2 rounded-full border border-teal-600 bg-teal-50 px-4 py-2"
+          >
+            <Text className="text-center text-xs font-semibold uppercase tracking-wide text-teal-700">
+              Add cash entry
+            </Text>
+          </Pressable>
+          {!!entryMessage && <Text className="mt-2 text-xs text-zinc-600">{entryMessage}</Text>}
+        </View>
+
+        {!!lockPrompt && (
+          <View className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3">
+            <Text className="text-sm text-rose-900">{lockPrompt}</Text>
+          </View>
+        )}
+
         <View className="gap-2">
           <Text className="px-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
             Needs review ({needsReviewRows.length})
@@ -89,6 +179,9 @@ export default function LedgerScreen() {
         </View>
 
         <View className="gap-2">
+          <Text className="px-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            Current-trip history ({rows.length})
+          </Text>
           {rows.map((row) => (
             <TripFeedRow
               key={row.id}
@@ -97,6 +190,18 @@ export default function LedgerScreen() {
               amountLabel={row.amountLabel}
               categoryLabel={row.categoryLabel}
             />
+          ))}
+        </View>
+
+        <View className="gap-2">
+          <Text className="px-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            Activity log ({activityHistory.length})
+          </Text>
+          {activityHistory.map((activity) => (
+            <View key={activity.id} className="rounded-2xl border border-amber-100 bg-white px-4 py-3 shadow-sm">
+              <Text className="text-sm font-medium text-zinc-900">{activity.message}</Text>
+              <Text className="mt-1 text-xs text-zinc-500">{activity.createdAt}</Text>
+            </View>
           ))}
         </View>
 
@@ -142,11 +247,22 @@ export default function LedgerScreen() {
             return;
           }
 
+          const lockId = reserveSharedEditLock(reviewSheetExpenseId);
+
+          if (!lockId) {
+            return;
+          }
+
           categorizeImportedExpense({
             expenseId: reviewSheetExpenseId,
             actingTripMemberId: tripMemberId,
             categoryParentId,
             categorySubcategoryId
+          });
+          confirmLedgerEntryEditLock({
+            ledgerEntryId: reviewSheetExpenseId,
+            actingTripMemberId: tripMemberId,
+            lockId
           });
           setReviewSheetExpenseId(undefined);
         }}
@@ -155,9 +271,20 @@ export default function LedgerScreen() {
             return;
           }
 
+          const lockId = reserveSharedEditLock(reviewSheetExpenseId);
+
+          if (!lockId) {
+            return;
+          }
+
           uncategorizeImportedExpense({
             expenseId: reviewSheetExpenseId,
             actingTripMemberId: tripMemberId
+          });
+          confirmLedgerEntryEditLock({
+            ledgerEntryId: reviewSheetExpenseId,
+            actingTripMemberId: tripMemberId,
+            lockId
           });
           setReviewSheetExpenseId(undefined);
         }}

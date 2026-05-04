@@ -92,12 +92,30 @@ export function buildLedgerFeedRows(
 ): readonly LedgerFeedRow[] {
   return [...entries]
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-    .map((entry) => ({
-      id: entry.id,
-      title: entry.label,
-      amountLabel: `${currency} ${entry.amount.toFixed(2)}`,
-      meta: `Paid by ${entry.paidBy}`,
-      categoryLabel: resolveCategoryLabel(entry.categoryParentId, entry.categorySubcategoryId),
-      createdAt: entry.createdAt
-    }));
+    .map((entry) => {
+      const metaParts = [`Paid by ${entry.paidBy}`];
+
+      if (entry.isCash) {
+        metaParts.push("Cash");
+      }
+
+      if (entry.syncStatus === "pending") {
+        metaParts.push("Pending sync");
+      }
+
+      if (entry.deletedAt) {
+        metaParts.push("Soft deleted");
+      }
+
+      return {
+        id: entry.id,
+        title: entry.label,
+        amountLabel: `${currency} ${entry.amount.toFixed(2)}`,
+        meta: metaParts.join(" • "),
+        categoryLabel: entry.deletedAt
+          ? "Deleted"
+          : resolveCategoryLabel(entry.categoryParentId, entry.categorySubcategoryId),
+        createdAt: entry.createdAt
+      };
+    });
 }
