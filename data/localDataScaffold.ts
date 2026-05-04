@@ -1,23 +1,41 @@
 export type LocalDataScaffold = {
   schemaVersion: number;
-  entities: ["trips", "packing_lists", "ledger_entries"];
+  entities: [
+    "trips",
+    "trip_members",
+    "family_groups",
+    "family_group_members",
+    "packing_lists",
+    "ledger_entries"
+  ];
   syncMode: "local-only";
   notes: {
     storageAdapter: "watermelondb-planned";
     syncProvider: "supabase-planned";
-    activeTripScope: "single-active-trip";
+    activeTripScope: "most-recent-active-trip";
+    membershipAccess: "invite-only";
+    authProvider: "google-oauth-only";
   };
 };
 
 const LOCAL_DATA_SCAFFOLD: LocalDataScaffold = {
-  schemaVersion: 1,
-  entities: ["trips", "packing_lists", "ledger_entries"],
+  schemaVersion: 2,
+  entities: [
+    "trips",
+    "trip_members",
+    "family_groups",
+    "family_group_members",
+    "packing_lists",
+    "ledger_entries"
+  ],
   syncMode: "local-only",
   notes: {
     storageAdapter: "watermelondb-planned",
     syncProvider: "supabase-planned",
-    activeTripScope: "single-active-trip",
-  },
+    activeTripScope: "most-recent-active-trip",
+    membershipAccess: "invite-only",
+    authProvider: "google-oauth-only"
+  }
 };
 
 export function getLocalDataScaffold(): LocalDataScaffold {

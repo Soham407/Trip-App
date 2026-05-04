@@ -36,8 +36,15 @@ describe("foundation contracts", () => {
   it("exposes a local data scaffold for future WatermelonDB and sync work", () => {
     const scaffold = getLocalDataScaffold();
 
-    expect(scaffold.schemaVersion).toBe(1);
-    expect(scaffold.entities).toEqual(["trips", "packing_lists", "ledger_entries"]);
+    expect(scaffold.schemaVersion).toBe(2);
+    expect(scaffold.entities).toEqual([
+      "trips",
+      "trip_members",
+      "family_groups",
+      "family_group_members",
+      "packing_lists",
+      "ledger_entries"
+    ]);
     expect(scaffold.syncMode).toBe("local-only");
   });
 });
