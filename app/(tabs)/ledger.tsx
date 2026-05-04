@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View } from "react-native";
+import { Text, View } from "react-native";
 
 import { getCurrentTrip, getLedgerEntries } from "@/data/currentTripStore";
 
@@ -7,55 +7,19 @@ export default function LedgerScreen() {
   const entries = getLedgerEntries();
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Ledger</Text>
-      <View style={styles.stack}>
+    <View className="flex-1 bg-stone-100 px-5 py-6">
+      <Text className="text-3xl font-bold text-stone-900">Ledger</Text>
+      <View className="mt-5 gap-3">
         {entries.map((entry) => (
-          <View key={entry.id} style={styles.card}>
-            <Text style={styles.cardTitle}>{entry.label}</Text>
-            <Text style={styles.cardBody}>
+          <View key={entry.id} className="rounded-xl bg-white p-4">
+            <Text className="text-base font-semibold text-stone-900">{entry.label}</Text>
+            <Text className="mt-1 text-sm text-stone-600">
               {trip.currency} {entry.amount.toFixed(2)}
             </Text>
-            <Text style={styles.cardMeta}>Paid by {entry.paidBy}</Text>
+            <Text className="mt-0.5 text-sm text-stone-500">Paid by {entry.paidBy}</Text>
           </View>
         ))}
       </View>
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#f5f5f4",
-    paddingHorizontal: 20,
-    paddingVertical: 24
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "700",
-    color: "#1c1917"
-  },
-  stack: {
-    marginTop: 20,
-    gap: 12
-  },
-  card: {
-    borderRadius: 12,
-    padding: 16,
-    backgroundColor: "#ffffff"
-  },
-  cardTitle: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#1c1917"
-  },
-  cardBody: {
-    marginTop: 4,
-    color: "#57534e"
-  },
-  cardMeta: {
-    marginTop: 2,
-    color: "#78716c"
-  }
-});

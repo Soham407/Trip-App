@@ -1,10 +1,11 @@
 import FontAwesome6 from "@expo/vector-icons/FontAwesome6";
 import { Tabs } from "expo-router";
+import type { ComponentProps } from "react";
 
 import { TAB_ROUTES } from "@/navigation/tabs";
 
 function TabBarIcon(props: {
-  name: React.ComponentProps<typeof FontAwesome6>["name"];
+  name: ComponentProps<typeof FontAwesome6>["name"];
   color: string;
 }) {
   return <FontAwesome6 size={18} {...props} />;
