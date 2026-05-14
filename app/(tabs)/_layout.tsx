@@ -2,11 +2,11 @@ import FontAwesome6 from "@expo/vector-icons/FontAwesome6";
 import { router, Tabs } from "expo-router";
 import type { ComponentProps } from "react";
 import { useEffect, useState } from "react";
-import { Text, View } from "react-native";
+import { AppState, Text, View } from "react-native";
 
 import { TAB_ROUTES } from "@/navigation/tabs";
 import { getLaunchRouteAsync } from "@/data/appLaunchService";
-import { subscribeToCurrentTripRealtime } from "@/data/cloudBootstrap";
+import { hydrateStoresFromSupabase, subscribeToCurrentTripRealtime } from "@/data/cloudBootstrap";
 import { getCurrentTripIdentity } from "@/data/tripIdentityStore";
 
 function TabBarIcon(props: {
@@ -57,8 +57,15 @@ export default function TabLayout() {
       // No active trip yet — realtime is a no-op until one exists.
     }
 
+    const appStateSub = AppState.addEventListener("change", (status) => {
+      if (status === "active") {
+        void hydrateStoresFromSupabase().catch(() => {});
+      }
+    });
+
     return () => {
       unsubscribe?.();
+      appStateSub.remove();
     };
   }, [ready]);
 

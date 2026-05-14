@@ -562,6 +562,49 @@ export function hydrateCurrentTripStoreFromRemote(input: {
     ];
   });
 
+  // Preserve and re-attempt any local-only entries that the cloud doesn't know
+  // about yet — e.g. a manual cash entry added while offline. Without this,
+  // a realtime rehydration would wipe the user's local write before its
+  // cloud upsert had a chance to land.
+  const orphanedLedgerEntries: LedgerEntry[] = [];
+  Object.entries(state.ledgerEntriesByTrip).forEach(([tripId, localEntries]) => {
+    const remoteIds = new Set((ledgerEntriesByTrip[tripId] ?? []).map((entry) => entry.id));
+    const orphans = localEntries.filter((entry) => !remoteIds.has(entry.id));
+    if (orphans.length) {
+      ledgerEntriesByTrip[tripId] = [...(ledgerEntriesByTrip[tripId] ?? []), ...orphans];
+      orphanedLedgerEntries.push(...orphans);
+    }
+  });
+
+  const orphanedListItems: { listId: string; item: TripListItem }[] = [];
+  Object.entries(state.listsByTrip).forEach(([tripId, localLists]) => {
+    const remoteLists = listsByTrip[tripId] ?? [];
+    const localListsById = new Map(localLists.map((list) => [list.id, list]));
+    listsByTrip[tripId] = remoteLists.map((remoteList) => {
+      const localList = localListsById.get(remoteList.id);
+      if (!localList) {
+        return remoteList;
+      }
+      const remoteItemIds = new Set(remoteList.items.map((item) => item.id));
+      const orphans = localList.items.filter((item) => !remoteItemIds.has(item.id));
+      if (!orphans.length) {
+        return remoteList;
+      }
+      orphans.forEach((item) => orphanedListItems.push({ listId: remoteList.id, item }));
+      return { ...remoteList, items: [...remoteList.items, ...orphans] };
+    });
+  });
+
+  const orphanedFailedLogs: FailedExpenseIngestionLog[] = [];
+  Object.entries(state.failedLogsByTrip).forEach(([tripId, localLogs]) => {
+    const remoteIds = new Set((failedLogsByTrip[tripId] ?? []).map((log) => log.id));
+    const orphans = localLogs.filter((log) => !remoteIds.has(log.id));
+    if (orphans.length) {
+      failedLogsByTrip[tripId] = [...(failedLogsByTrip[tripId] ?? []), ...orphans];
+      orphanedFailedLogs.push(...orphans);
+    }
+  });
+
   state = {
     sequence: 1000,
     timestampCursor: 10,
@@ -574,6 +617,13 @@ export function hydrateCurrentTripStoreFromRemote(input: {
     ledgerEditLocksByTrip: {}
   };
   notifySubscribers();
+
+  // Re-attempt cloud persistence for everything we preserved. Each persist
+  // function logs on failure; if the network is still unavailable the next
+  // hydration will pick it up again.
+  orphanedLedgerEntries.forEach(persistLedgerEntryToCloud);
+  orphanedListItems.forEach(({ listId, item }) => persistListItemToCloud(listId, item));
+  orphanedFailedLogs.forEach(persistFailedLogToCloud);
 }
 
 function persistListItemToCloud(listId: string, item: TripListItem): void {
