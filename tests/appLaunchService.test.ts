@@ -1,4 +1,16 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("expo-linking", () => ({
+  createURL: (path: string) => `tripappbootstrap:/${path}`
+}));
+
+vi.mock("@/data/supabaseClient", () => ({
+  supabase: {
+    from: () => ({
+      upsert: () => Promise.resolve({ error: null })
+    })
+  }
+}));
 
 import {
   createInitialTrip,
@@ -42,19 +54,19 @@ describe("auth and setup launch flow", () => {
     expect(getCurrentTripIdentity().id).toBe(latestTrip.id);
   });
 
-  it("creates setup entities with pending sync state and invite-only member snapshots", () => {
+  it("creates setup entities with pending sync state and invite-only member snapshots", async () => {
     const user = signInWithGoogleProfile({
       email: "new-parent@example.com",
       displayName: "New Parent"
     });
 
-    const group = createReusableFamilyGroup({
+    const group = await createReusableFamilyGroup({
       name: "Cousins",
       ownerUserId: user.id,
       membersText: "Ria <ria@example.com>\nSam <sam@example.com>"
     });
 
-    const trip = createInitialTrip({
+    const trip = await createInitialTrip({
       familyGroupId: group.id,
       createdByUserId: user.id,
       destination: "Udaipur",

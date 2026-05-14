@@ -9,6 +9,7 @@ import {
   writeRepositoryState,
   type SyncStatus
 } from "@/data/localFirstRepository";
+import { supabase } from "@/data/supabaseClient";
 
 export type CurrentTrip = {
   readonly id: string;
@@ -545,6 +546,30 @@ function normalizeAlertTimestamp(rawTimestamp: string | undefined): string | nul
 function parseBankAlert(payload: string):
   | { readonly amount: number; readonly merchant: string; readonly timestamp: string }
   | { readonly error: string } {
+  const upiMatch = payload.match(
+    /(?:gpay|google\s*pay|upi).*?(?:paid|debited|sent|spent)\s+(?:INR|RS\.?|Rs\.?)\s*([0-9]+(?:\.[0-9]{1,2})?).*?(?:to|at|for)\s+(.+?)\s+(?:on|at)\s+([0-9]{4}-[0-9]{2}-[0-9]{2}(?:[ T][0-9]{2}:[0-9]{2}(?::[0-9]{2})?)?)/i
+  );
+
+  if (upiMatch) {
+    const amount = Number.parseFloat(upiMatch[1] ?? "NaN");
+    const merchant = upiMatch[2]?.trim();
+    const timestamp = normalizeAlertTimestamp(upiMatch[3]);
+
+    if (!Number.isFinite(amount)) {
+      return { error: "UPI alert amount was not a valid number" };
+    }
+
+    if (!merchant) {
+      return { error: "UPI alert merchant was empty" };
+    }
+
+    if (!timestamp) {
+      return { error: "UPI alert timestamp was not parseable" };
+    }
+
+    return { amount, merchant, timestamp };
+  }
+
   const bankMatch = payload.match(
     /used at\s+(.+?)\s+on\s+([0-9]{4}-[0-9]{2}-[0-9]{2}(?:[ T][0-9]{2}:[0-9]{2}(?::[0-9]{2})?)?)\s+for\s+(?:INR|RS\.?|Rs\.?)\s*([0-9]+(?:\.[0-9]{1,2})?)/i
   );
@@ -625,6 +650,116 @@ function parseImportedExpensePayload(payload: string):
 export function resetCurrentTripStoreForTests(): void {
   state = resetRepositoryState("current-trip", buildInitialState());
   notifySubscribers();
+}
+
+export function hydrateCurrentTripStoreFromRemote(input: {
+  readonly lists: readonly TripList[];
+  readonly ledgerEntries: readonly LedgerEntry[];
+  readonly failedLogs: readonly FailedExpenseIngestionLog[];
+  readonly ledgerActivities?: readonly LedgerActivity[];
+}): void {
+  const listsByTrip: Record<string, TripList[]> = {};
+  const ledgerEntriesByTrip: Record<string, LedgerEntry[]> = {};
+  const failedLogsByTrip: Record<string, FailedExpenseIngestionLog[]> = {};
+  const ledgerActivityByTrip: Record<string, LedgerActivity[]> = {};
+
+  input.lists.forEach((list) => {
+    listsByTrip[list.tripId] = [...(listsByTrip[list.tripId] ?? []), cloneTripList(list)];
+  });
+
+  input.ledgerEntries.forEach((entry) => {
+    ledgerEntriesByTrip[entry.tripId] = [
+      ...(ledgerEntriesByTrip[entry.tripId] ?? []),
+      cloneLedgerEntry(entry)
+    ];
+  });
+
+  input.failedLogs.forEach((log) => {
+    failedLogsByTrip[log.tripId] = [...(failedLogsByTrip[log.tripId] ?? []), cloneFailedLog(log)];
+  });
+
+  input.ledgerActivities?.forEach((activity) => {
+    ledgerActivityByTrip[activity.tripId] = [
+      ...(ledgerActivityByTrip[activity.tripId] ?? []),
+      cloneLedgerActivity(activity)
+    ];
+  });
+
+  state = {
+    sequence: 1000,
+    timestampCursor: 10,
+    listItemSequence: 1000,
+    voiceCandidateSequence: 1000,
+    listsByTrip,
+    ledgerEntriesByTrip,
+    failedLogsByTrip,
+    ledgerActivityByTrip,
+    ledgerEditLocksByTrip: {}
+  };
+  notifySubscribers();
+}
+
+function persistListItemToCloud(listId: string, item: TripListItem): void {
+  void supabase
+    .from("trip_list_items")
+    .upsert({
+      id: item.id,
+      list_id: listId,
+      label: item.label,
+      checked: item.checked,
+      sync_status: item.syncStatus ?? "pending"
+    })
+    .then(({ error }) => {
+      if (error) {
+        console.error("Supabase list item sync failed", error.message);
+      }
+    });
+}
+
+function persistLedgerEntryToCloud(entry: LedgerEntry): void {
+  void supabase
+    .from("ledger_entries")
+    .upsert({
+      id: entry.id,
+      trip_id: entry.tripId,
+      label: entry.label,
+      amount: entry.amount,
+      paid_by: entry.paidBy,
+      created_at: entry.createdAt,
+      category_parent_id: entry.categoryParentId ?? null,
+      category_subcategory_id: entry.categorySubcategoryId ?? null,
+      status: entry.status,
+      source: entry.source,
+      sync_status: entry.syncStatus,
+      is_cash: entry.isCash ?? false,
+      deleted_at: entry.deletedAt ?? null,
+      deleted_by_trip_member_id: entry.deletedByTripMemberId ?? null,
+      updated_by_trip_member_id: entry.updatedByTripMemberId ?? null
+    })
+    .then(({ error }) => {
+      if (error) {
+        console.error("Supabase ledger sync failed", error.message);
+      }
+    });
+}
+
+function persistFailedLogToCloud(log: FailedExpenseIngestionLog): void {
+  void supabase
+    .from("failed_expense_ingestion_logs")
+    .upsert({
+      id: log.id,
+      trip_id: log.tripId,
+      source: log.source,
+      raw_payload: log.rawPayload,
+      reason: log.reason,
+      created_at: log.createdAt,
+      sync_status: log.syncStatus
+    })
+    .then(({ error }) => {
+      if (error) {
+        console.error("Supabase failed import sync failed", error.message);
+      }
+    });
 }
 
 export function subscribeCurrentTripStore(listener: () => void): () => void {
@@ -740,6 +875,7 @@ export function commitVoiceDictationReview(
     list.id === targetList.id ? updatedList : list
   );
 
+  nextItems.forEach((item) => persistListItemToCloud(targetList.id, item));
   notifySubscribers();
 
   return {
@@ -779,6 +915,9 @@ export function toggleTripListItem(input: {
     list.id === targetList.id ? updatedList : list
   );
 
+  if (toggledItem) {
+    persistListItemToCloud(targetList.id, toggledItem);
+  }
   notifySubscribers();
 
   if (!toggledItem) {
@@ -955,6 +1094,7 @@ export function addManualCashLedgerEntry(input: AddManualCashLedgerEntryInput): 
     type: "manual-cash-entry-added",
     message: `Added manual cash entry "${manualEntry.label}".`
   });
+  persistLedgerEntryToCloud(manualEntry);
   notifySubscribers();
 
   return cloneLedgerEntry(manualEntry);
@@ -991,6 +1131,7 @@ export function confirmManualLedgerEntrySync(input: ConfirmManualLedgerEntrySync
     type: "manual-entry-sync-confirmed",
     message: `Confirmed sync for manual entry "${syncedEntry.label}".`
   });
+  persistLedgerEntryToCloud(syncedEntry);
   notifySubscribers();
 
   return cloneLedgerEntry(syncedEntry);
@@ -1032,6 +1173,7 @@ export function softDeleteLedgerEntry(input: SoftDeleteLedgerEntryInput): Ledger
     type: "soft-delete",
     message: `Soft deleted ledger entry "${deleted.label}".`
   });
+  persistLedgerEntryToCloud(deleted);
   notifySubscribers();
 
   return cloneLedgerEntry(deleted);
@@ -1102,6 +1244,7 @@ export function ingestSharedExpenseAlert(input: IngestSharedExpenseAlertInput): 
     };
 
     state.failedLogsByTrip[tripId] = [...(state.failedLogsByTrip[tripId] ?? []), failedLog];
+    persistFailedLogToCloud(failedLog);
     notifySubscribers();
     return null;
   }
@@ -1119,6 +1262,7 @@ export function ingestSharedExpenseAlert(input: IngestSharedExpenseAlertInput): 
   };
 
   state.ledgerEntriesByTrip[tripId] = [...(state.ledgerEntriesByTrip[tripId] ?? []), importedExpense];
+  persistLedgerEntryToCloud(importedExpense);
   notifySubscribers();
 
   return cloneLedgerEntry(importedExpense);
@@ -1157,6 +1301,7 @@ export function categorizeImportedExpense(input: CategorizeImportedExpenseInput)
     type: "imported-entry-categorized",
     message: `Categorized imported entry "${categorized.label}".`
   });
+  persistLedgerEntryToCloud(categorized);
   notifySubscribers();
 
   return cloneLedgerEntry(categorized);
@@ -1195,6 +1340,7 @@ export function uncategorizeImportedExpense(input: UncategorizedImportedExpenseI
     type: "imported-entry-uncategorized",
     message: `Marked imported entry "${uncategorized.label}" as uncategorized.`
   });
+  persistLedgerEntryToCloud(uncategorized);
   notifySubscribers();
 
   return cloneLedgerEntry(uncategorized);

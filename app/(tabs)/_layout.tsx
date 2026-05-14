@@ -1,8 +1,11 @@
 import FontAwesome6 from "@expo/vector-icons/FontAwesome6";
-import { Tabs } from "expo-router";
+import { router, Tabs } from "expo-router";
 import type { ComponentProps } from "react";
+import { useEffect, useState } from "react";
+import { Text, View } from "react-native";
 
 import { TAB_ROUTES } from "@/navigation/tabs";
+import { getLaunchRouteAsync } from "@/data/appLaunchService";
 
 function TabBarIcon(props: {
   name: ComponentProps<typeof FontAwesome6>["name"];
@@ -12,6 +15,41 @@ function TabBarIcon(props: {
 }
 
 export default function TabLayout() {
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function guardTabs() {
+      const route = await getLaunchRouteAsync();
+
+      if (cancelled) {
+        return;
+      }
+
+      if (route !== "/(tabs)") {
+        router.replace(route);
+        return;
+      }
+
+      setReady(true);
+    }
+
+    void guardTabs();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!ready) {
+    return (
+      <View className="flex-1 items-center justify-center bg-[#eef4f1] px-5">
+        <Text className="text-center text-sm font-semibold text-[#07110d]">Loading trip workspace...</Text>
+      </View>
+    );
+  }
+
   return (
     <Tabs
       screenOptions={{
@@ -20,10 +58,9 @@ export default function TabLayout() {
         tabBarInactiveTintColor: "#6b7280",
         tabBarStyle: {
           position: "absolute",
-          alignSelf: "center",
           bottom: 12,
-          width: "90%",
-          maxWidth: 390,
+          left: "5%",
+          right: "5%",
           backgroundColor: "#ffffff",
           borderColor: "#eef4f1",
           borderRadius: 28,

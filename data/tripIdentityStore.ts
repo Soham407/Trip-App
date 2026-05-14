@@ -246,6 +246,31 @@ export function resetTripIdentityStoreForTests(): void {
   state = resetRepositoryState("trip-identity", buildInitialState());
 }
 
+export function hydrateTripIdentityStoreFromRemote(input: {
+  readonly sessionUser?: TripIdentityUser;
+  readonly users: readonly TripIdentityUser[];
+  readonly groups: readonly FamilyGroup[];
+  readonly trips: readonly TripRecord[];
+  readonly tripMembers: readonly TripMember[];
+}): void {
+  const usersById = new Map<string, TripIdentityUser>();
+
+  [...input.users, ...(input.sessionUser ? [input.sessionUser] : [])].forEach((user) => {
+    usersById.set(user.id, cloneUser(user));
+  });
+
+  state = {
+    sequence: 1000,
+    timestampCursor: 10,
+    sessionUserId: input.sessionUser?.id,
+    users: [...usersById.values()],
+    groups: input.groups.map(cloneGroup),
+    trips: input.trips.map(cloneTrip),
+    tripMembers: input.tripMembers.map(cloneTripMember)
+  };
+  saveTripIdentityState();
+}
+
 export function getAuthPolicy(): AuthPolicy {
   return AUTH_POLICY;
 }

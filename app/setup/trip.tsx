@@ -8,9 +8,9 @@ import { getAuthenticatedUser, getFamilyGroups } from "@/data/tripIdentityStore"
 export default function TripSetupScreen() {
   const user = getAuthenticatedUser();
   const familyGroup = getFamilyGroups()[0];
-  const [destination, setDestination] = useState("Goa");
-  const [startsOn, setStartsOn] = useState("2026-06-12");
-  const [endsOn, setEndsOn] = useState("2026-06-19");
+  const [destination, setDestination] = useState("");
+  const [startsOn, setStartsOn] = useState("");
+  const [endsOn, setEndsOn] = useState("");
   const [message, setMessage] = useState<string>();
 
   return (
@@ -19,7 +19,7 @@ export default function TripSetupScreen() {
         <View className="rounded-[32px] bg-white/95 p-5 shadow-sm">
           <Text className="text-3xl font-bold text-[#07110d]">Create trip</Text>
           <Text className="mt-2 text-sm leading-5 text-zinc-600">
-            INR-only trip workspace with cloned family invites.
+            Create a real trip workspace backed by Supabase.
           </Text>
           <TextInput
             value={destination}
@@ -40,7 +40,7 @@ export default function TripSetupScreen() {
             className="mt-2 rounded-2xl border border-zinc-100 bg-[#f7fbf8] px-4 py-3 text-sm text-zinc-900"
           />
           <Pressable
-            onPress={() => {
+            onPress={async () => {
               if (!user) {
                 router.replace("/auth");
                 return;
@@ -52,7 +52,7 @@ export default function TripSetupScreen() {
               }
 
               try {
-                createInitialTrip({
+                await createInitialTrip({
                   familyGroupId: familyGroup.id,
                   createdByUserId: user.id,
                   destination,

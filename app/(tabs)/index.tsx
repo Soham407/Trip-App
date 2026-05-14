@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import FontAwesome6 from "@expo/vector-icons/FontAwesome6";
+import { router } from "expo-router";
 
 import {
   categorizeImportedExpense,
@@ -49,8 +50,11 @@ export default function DashboardScreen() {
       title="My Trip"
       subtitle={`${trip.destination} • ${trip.startsOn} to ${trip.endsOn}`}
       actionSlot={
-        <Pressable className="h-14 w-14 items-center justify-center rounded-full bg-white/80 shadow-sm">
-          <FontAwesome6 name="bell" size={18} color="#07110d" />
+        <Pressable
+          onPress={() => router.push("/ops")}
+          className="h-14 w-14 items-center justify-center rounded-full bg-white/80 shadow-sm"
+        >
+          <FontAwesome6 name="table" size={18} color="#07110d" />
           {dashboard.needsReviewCount ? (
             <View className="absolute right-1 top-0 rounded-full bg-[#caff68] px-1.5 py-0.5">
               <Text className="text-[10px] font-bold text-[#07110d]">{dashboard.needsReviewCount}</Text>
@@ -77,12 +81,12 @@ export default function DashboardScreen() {
 
         <View className="flex-row justify-between rounded-[30px] bg-[#eef4f1] p-3">
           {[
-            { icon: "receipt", label: "Review" },
-            { icon: "list-check", label: "Lists" },
-            { icon: "wallet", label: "Cash" },
-            { icon: "ellipsis", label: "More" }
+            { icon: "receipt", label: "Review", onPress: () => setSelectedExpenseId(needsReviewRows[0]?.id) },
+            { icon: "list-check", label: "Lists", onPress: () => router.push("/(tabs)/lists") },
+            { icon: "wallet", label: "Cash", onPress: () => router.push("/(tabs)/ledger") },
+            { icon: "ellipsis", label: "More", onPress: () => router.push("/ops") }
           ].map((item, index) => (
-            <View key={item.label} className="items-center gap-2">
+            <Pressable key={item.label} onPress={item.onPress} className="items-center gap-2">
               <View
                 className={
                   index === 0
@@ -93,7 +97,7 @@ export default function DashboardScreen() {
                 <FontAwesome6 name={item.icon} size={18} color="#07110d" />
               </View>
               <Text className="text-xs font-medium text-[#07110d]">{item.label}</Text>
-            </View>
+            </Pressable>
           ))}
         </View>
 
@@ -132,8 +136,10 @@ export default function DashboardScreen() {
         <View className="gap-2">
           <View className="flex-row items-center justify-between px-1">
             <Text className="text-xl font-semibold text-[#07110d]">Transaction History</Text>
-            <Text className="text-sm font-medium text-[#07110d]">View all</Text>
-          </View>
+              <Pressable onPress={() => router.push("/(tabs)/ledger")}>
+                <Text className="text-sm font-medium text-[#07110d]">View all</Text>
+              </Pressable>
+            </View>
           {recentRows.map((row) => (
             <TripFeedRow
               key={row.id}

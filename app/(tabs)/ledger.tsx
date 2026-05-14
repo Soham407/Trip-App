@@ -44,12 +44,13 @@ export default function LedgerScreen() {
   const [manualLabel, setManualLabel] = useState("");
   const [manualAmount, setManualAmount] = useState("");
   const [manualPaidBy, setManualPaidBy] = useState(tripMembers[0]?.displayName ?? "");
-  const [importPayload, setImportPayload] = useState(
-    "HDFC Bank Alert: Card XX19 used at LUSITANIA CAFE on 2026-05-03 09:12 for INR 845.20"
-  );
+  const [importPayload, setImportPayload] = useState("");
   const [entryMessage, setEntryMessage] = useState<string>();
   const [importMessage, setImportMessage] = useState<string>();
   const [lockPrompt, setLockPrompt] = useState<string>();
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [focusedQueue, setFocusedQueue] = useState<"all" | "needs-review" | "failed">("all");
 
   const [categorySheetOpen, setCategorySheetOpen] = useState(false);
   const [reviewSheetExpenseId, setReviewSheetExpenseId] = useState<string>();
@@ -58,6 +59,21 @@ export default function LedgerScreen() {
 
   const filteredEntries = useMemo(() => {
     return entries.filter((entry) => {
+      if (focusedQueue === "needs-review" && entry.status !== "imported-uncategorized") {
+        return false;
+      }
+
+      const normalizedQuery = searchQuery.trim().toLowerCase();
+
+      if (
+        normalizedQuery &&
+        !`${entry.label} ${entry.paidBy} ${entry.categoryParentId ?? ""} ${entry.categorySubcategoryId ?? ""}`
+          .toLowerCase()
+          .includes(normalizedQuery)
+      ) {
+        return false;
+      }
+
       if (!selectedParentId) {
         return true;
       }
@@ -72,7 +88,7 @@ export default function LedgerScreen() {
 
       return entry.categorySubcategoryId === selectedSubcategoryId;
     });
-  }, [entries, selectedParentId, selectedSubcategoryId]);
+  }, [entries, focusedQueue, searchQuery, selectedParentId, selectedSubcategoryId]);
 
   const rows = buildLedgerFeedRows(filteredEntries, trip.currency);
   const selectedReviewExpense = entries.find((entry) => entry.id === reviewSheetExpenseId);
@@ -109,20 +125,33 @@ export default function LedgerScreen() {
       subtitle={`${trip.destination} • ${formatTripCurrency(trip.currency, totalSpend)}`}
       backIcon
       actionSlot={
-        <Pressable className="h-14 w-14 items-center justify-center rounded-full bg-white/80 shadow-sm">
+        <Pressable
+          onPress={() => setSearchVisible((value) => !value)}
+          className="h-14 w-14 items-center justify-center rounded-full bg-white/80 shadow-sm"
+        >
           <FontAwesome6 name="magnifying-glass" size={18} color="#07110d" />
         </Pressable>
       }
     >
       <ScrollView className="flex-1" contentContainerClassName="gap-4 pb-28">
+        {searchVisible ? (
+          <TextInput
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            autoFocus
+            placeholder="Search merchant, payer, or category"
+            className="rounded-2xl border border-zinc-100 bg-white px-4 py-3 text-sm text-zinc-900"
+          />
+        ) : null}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerClassName="gap-2 pr-5">
-          <TripChip label="All" selected={!selectedParentId} onPress={() => {
+          <TripChip label="All" selected={focusedQueue === "all" && !selectedParentId} onPress={() => {
+            setFocusedQueue("all");
             setSelectedParentId(undefined);
             setSelectedSubcategoryId(undefined);
           }} />
           <TripChip label={selectedParentId ? selectedLabel : "Category"} selected={!!selectedParentId} onPress={() => setCategorySheetOpen(true)} />
-          <TripChip label="Needs review" selected={needsReviewRows.length > 0} />
-          <TripChip label="Failed" selected={failedLog.length > 0} />
+          <TripChip label="Needs review" selected={focusedQueue === "needs-review"} onPress={() => setFocusedQueue("needs-review")} />
+          <TripChip label="Failed" selected={focusedQueue === "failed"} onPress={() => setFocusedQueue("failed")} />
         </ScrollView>
 
         <View className="rounded-[28px] bg-white/95 p-4 shadow-sm">
@@ -199,6 +228,11 @@ export default function LedgerScreen() {
           <View className="mt-3 flex-row flex-wrap gap-2">
             <Pressable
               onPress={() => {
+                if (!importPayload.trim()) {
+                  setImportMessage("Paste a real bank, GPay, UPI, or FASTag alert first.");
+                  return;
+                }
+
                 const imported = ingestSharedExpenseAlert({
                   source: "email",
                   payload: importPayload
@@ -212,15 +246,12 @@ export default function LedgerScreen() {
             </Pressable>
             <Pressable
               onPress={() => {
-                ingestSharedExpenseAlert({
-                  source: "webhook",
-                  payload: "Webhook ping without money amount"
-                });
-                setImportMessage("Failed import logged for review.");
+                setImportPayload("");
+                setImportMessage(undefined);
               }}
-              className="rounded-full border border-rose-200 bg-rose-50 px-4 py-3"
+              className="rounded-full border border-zinc-200 bg-white px-4 py-3"
             >
-              <Text className="text-sm font-semibold text-rose-900">Create failed import</Text>
+              <Text className="text-sm font-semibold text-[#07110d]">Clear</Text>
             </Pressable>
           </View>
           {!!importMessage && <Text className="mt-2 text-xs text-zinc-600">{importMessage}</Text>}
@@ -259,6 +290,7 @@ export default function LedgerScreen() {
           </View>
         )}
 
+        {focusedQueue !== "failed" ? (
         <View className="gap-2">
           <View className="flex-row items-center justify-between px-1">
             <Text className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
@@ -293,7 +325,9 @@ export default function LedgerScreen() {
             />
           ))}
         </View>
+        ) : null}
 
+        {focusedQueue !== "failed" ? (
         <View className="gap-2">
           <Text className="px-1 text-sm font-semibold text-zinc-500">
             Today
@@ -308,7 +342,9 @@ export default function LedgerScreen() {
             />
           ))}
         </View>
+        ) : null}
 
+        {focusedQueue !== "needs-review" ? (
         <View className="gap-2">
           <Text className="px-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
             Activity log ({activityHistory.length})
@@ -320,6 +356,7 @@ export default function LedgerScreen() {
             </View>
           ))}
         </View>
+        ) : null}
 
         <View className="gap-2">
           <Text className="px-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
