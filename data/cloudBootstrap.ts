@@ -239,3 +239,27 @@ export async function hydrateStoresFromSupabase(): Promise<void> {
     ledgerActivities
   });
 }
+
+export function subscribeToCurrentTripRealtime(tripId: string): () => void {
+  const channel = supabase
+    .channel(`trip-realtime:${tripId}`)
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "ledger_entries", filter: `trip_id=eq.${tripId}` },
+      () => {
+        void hydrateStoresFromSupabase().catch(() => {});
+      }
+    )
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "failed_expense_ingestion_logs", filter: `trip_id=eq.${tripId}` },
+      () => {
+        void hydrateStoresFromSupabase().catch(() => {});
+      }
+    )
+    .subscribe();
+
+  return () => {
+    void supabase.removeChannel(channel);
+  };
+}

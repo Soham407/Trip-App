@@ -106,8 +106,8 @@ const AUTH_POLICY: AuthPolicy = {
 
 const INITIAL_OWNER_USER: TripIdentityUser = {
   id: "user-owner-001",
-  email: "parent@example.com",
-  displayName: "Parent",
+  email: "soham@example.com",
+  displayName: "Soham",
   provider: "google"
 };
 
@@ -379,6 +379,42 @@ export function getAllTripIdentities(): readonly TripRecord[] {
 
 export function getTripMembers(tripId: string): readonly TripMember[] {
   return state.tripMembers.filter((member) => member.tripId === tripId).map(cloneTripMember);
+}
+
+export function getCurrentUserTripMember(tripId: string): TripMember | undefined {
+  const user = getAuthenticatedUser();
+
+  if (!user) {
+    return undefined;
+  }
+
+  const userEmail = sanitizeEmail(user.email);
+  const match = state.tripMembers.find(
+    (member) => member.tripId === tripId && sanitizeEmail(member.email) === userEmail
+  );
+
+  return match ? cloneTripMember(match) : undefined;
+}
+
+export function getPrimaryAdminTripMember(tripId: string): TripMember | undefined {
+  const trip = state.trips.find((candidate) => candidate.id === tripId);
+
+  if (!trip) {
+    return undefined;
+  }
+
+  const creator = state.users.find((user) => user.id === trip.createdByUserId);
+
+  if (!creator) {
+    return undefined;
+  }
+
+  const creatorEmail = sanitizeEmail(creator.email);
+  const match = state.tripMembers.find(
+    (member) => member.tripId === tripId && sanitizeEmail(member.email) === creatorEmail
+  );
+
+  return match ? cloneTripMember(match) : undefined;
 }
 
 export function createTripFromFamilyGroup(input: CreateTripFromFamilyGroupInput): TripRecord {

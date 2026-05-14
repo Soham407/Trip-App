@@ -48,25 +48,6 @@ export async function getLaunchRouteAsync(): Promise<LaunchRoute> {
   return getLaunchRoute();
 }
 
-export async function signInWithEmailLink(email: string): Promise<void> {
-  const cleanEmail = email.trim().toLowerCase();
-
-  if (!cleanEmail) {
-    throw new Error("Enter the Google email for your trip account.");
-  }
-
-  const { error } = await supabase.auth.signInWithOtp({
-    email: cleanEmail,
-    options: {
-      emailRedirectTo: typeof document !== "undefined" ? window.location.origin : Linking.createURL("/")
-    }
-  });
-
-  if (error) {
-    throw new Error(error.message);
-  }
-}
-
 export async function signInWithGoogleOAuth(): Promise<void> {
   const { error } = await supabase.auth.signInWithOAuth({
     provider: "google",
