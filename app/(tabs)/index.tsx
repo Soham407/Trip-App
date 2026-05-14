@@ -12,7 +12,7 @@ import {
   subscribeCurrentTripStore,
   uncategorizeImportedExpense
 } from "@/data/currentTripStore";
-import { getTripMembers } from "@/data/tripIdentityStore";
+import { getCurrentUserTripMember } from "@/data/tripIdentityStore";
 import {
   TripCard,
   TripExpenseReviewSheet,
@@ -29,7 +29,7 @@ export default function DashboardScreen() {
   useEffect(() => subscribeCurrentTripStore(() => setStoreRevision((value) => value + 1)), []);
 
   const trip = getCurrentTrip();
-  const tripMemberId = getTripMembers(trip.id)[0]?.id;
+  const tripMemberId = getCurrentUserTripMember(trip.id)?.id;
   const dashboard = getDashboardSnapshot();
   const ledgerEntries = getLedgerEntries();
   const needsReviewRows = buildLedgerFeedRows(getNeedsReviewExpenses(), trip.currency);

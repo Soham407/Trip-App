@@ -102,7 +102,7 @@ export default function ListsScreen() {
               className="rounded-full bg-[#caff68] px-5 py-3"
             >
               <Text className="text-sm font-semibold text-[#07110d]">
-                Dictate + review
+                Review and add
               </Text>
             </Pressable>
           </View>

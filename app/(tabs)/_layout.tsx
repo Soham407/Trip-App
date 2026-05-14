@@ -6,6 +6,8 @@ import { Text, View } from "react-native";
 
 import { TAB_ROUTES } from "@/navigation/tabs";
 import { getLaunchRouteAsync } from "@/data/appLaunchService";
+import { subscribeToCurrentTripRealtime } from "@/data/cloudBootstrap";
+import { getCurrentTripIdentity } from "@/data/tripIdentityStore";
 
 function TabBarIcon(props: {
   name: ComponentProps<typeof FontAwesome6>["name"];
@@ -41,6 +43,24 @@ export default function TabLayout() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!ready) {
+      return;
+    }
+
+    let unsubscribe: (() => void) | undefined;
+
+    try {
+      unsubscribe = subscribeToCurrentTripRealtime(getCurrentTripIdentity().id);
+    } catch {
+      // No active trip yet — realtime is a no-op until one exists.
+    }
+
+    return () => {
+      unsubscribe?.();
+    };
+  }, [ready]);
 
   if (!ready) {
     return (

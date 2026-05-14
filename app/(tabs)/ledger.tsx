@@ -17,7 +17,7 @@ import {
   subscribeCurrentTripStore,
   uncategorizeImportedExpense
 } from "@/data/currentTripStore";
-import { getTripMembers } from "@/data/tripIdentityStore";
+import { getCurrentUserTripMember, getTripMembers } from "@/data/tripIdentityStore";
 import {
   TripCategorySheet,
   TripChip,
@@ -35,7 +35,8 @@ export default function LedgerScreen() {
 
   const trip = getCurrentTrip();
   const tripMembers = getTripMembers(trip.id);
-  const tripMemberId = tripMembers[0]?.id;
+  const currentTripMember = getCurrentUserTripMember(trip.id);
+  const tripMemberId = currentTripMember?.id;
   const entries = getLedgerEntries();
   const failedLog = getFailedExpenseIngestionLog();
   const needsReviewRows = buildLedgerFeedRows(getNeedsReviewExpenses(), trip.currency);
@@ -43,7 +44,7 @@ export default function LedgerScreen() {
 
   const [manualLabel, setManualLabel] = useState("");
   const [manualAmount, setManualAmount] = useState("");
-  const [manualPaidBy, setManualPaidBy] = useState(tripMembers[0]?.displayName ?? "");
+  const [manualPaidBy, setManualPaidBy] = useState(currentTripMember?.displayName ?? tripMembers[0]?.displayName ?? "");
   const [importPayload, setImportPayload] = useState("");
   const [entryMessage, setEntryMessage] = useState<string>();
   const [importMessage, setImportMessage] = useState<string>();
@@ -174,12 +175,19 @@ export default function LedgerScreen() {
             keyboardType="decimal-pad"
             className="mt-2 rounded-2xl border border-zinc-100 bg-[#f7fbf8] px-4 py-3 text-sm text-zinc-900"
           />
-          <TextInput
-            value={manualPaidBy}
-            onChangeText={setManualPaidBy}
-            placeholder="Paid by"
-            className="mt-2 rounded-2xl border border-zinc-100 bg-[#f7fbf8] px-4 py-3 text-sm text-zinc-900"
-          />
+          <View className="mt-2">
+            <Text className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Paid by</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerClassName="mt-2 gap-2 pr-5">
+              {tripMembers.map((member) => (
+                <TripChip
+                  key={member.id}
+                  label={member.displayName}
+                  selected={manualPaidBy === member.displayName}
+                  onPress={() => setManualPaidBy(member.displayName)}
+                />
+              ))}
+            </ScrollView>
+          </View>
           <Pressable
             onPress={() => {
               if (!tripMemberId) {
@@ -296,23 +304,6 @@ export default function LedgerScreen() {
             <Text className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
               Needs review ({needsReviewRows.length})
             </Text>
-            {needsReviewRows[0] && tripMembers[1] ? (
-              <Pressable
-                onPress={() => {
-                  const conflictLock = requestLedgerEntryEditLock({
-                    ledgerEntryId: needsReviewRows[0].id,
-                    actingTripMemberId: tripMembers[1].id
-                  });
-
-                  if (conflictLock.status === "granted") {
-                    setLockPrompt(`${tripMembers[1].displayName} is editing ${needsReviewRows[0].title}.`);
-                  }
-                }}
-                className="rounded-full bg-white px-3 py-1.5"
-              >
-                <Text className="text-xs font-semibold text-[#07110d]">Simulate edit lock</Text>
-              </Pressable>
-            ) : null}
           </View>
           {needsReviewRows.map((row) => (
             <TripFeedRow

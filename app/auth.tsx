@@ -1,18 +1,16 @@
 import { router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import FontAwesome6 from "@expo/vector-icons/FontAwesome6";
 import * as Linking from "expo-linking";
 
 import {
   getLaunchRouteAsync,
-  signInWithEmailLink,
   signInWithGoogleOAuth
 } from "@/data/appLaunchService";
 import { supabase } from "@/data/supabaseClient";
 
 export default function AuthScreen() {
-  const [email, setEmail] = useState("");
   const [message, setMessage] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
   const navigating = useRef(false);
@@ -68,15 +66,6 @@ export default function AuthScreen() {
             Use the Google account that is invited to the trip. The dashboard opens only after Supabase confirms the session.
           </Text>
 
-          <TextInput
-            value={email}
-            onChangeText={setEmail}
-            autoCapitalize="none"
-            keyboardType="email-address"
-            placeholder="Google email"
-            className="mt-5 rounded-2xl border border-zinc-100 bg-[#f7fbf8] px-4 py-3 text-sm text-zinc-900"
-          />
-
           <Pressable
             disabled={submitting}
             onPress={async () => {
@@ -94,28 +83,7 @@ export default function AuthScreen() {
             className="mt-5 rounded-full bg-[#caff68] px-5 py-4"
           >
             <Text className="text-center text-sm font-semibold text-[#07110d]">
-              Continue with Google OAuth
-            </Text>
-          </Pressable>
-          <Pressable
-            disabled={submitting}
-            onPress={async () => {
-              setSubmitting(true);
-              setMessage(undefined);
-
-              try {
-                await signInWithEmailLink(email);
-                setMessage("Check your email for the Supabase sign-in link, then return here.");
-              } catch (error) {
-                setMessage(error instanceof Error ? error.message : "Unable to send sign-in link.");
-              } finally {
-                setSubmitting(false);
-              }
-            }}
-            className="mt-3 rounded-full border border-zinc-200 bg-white px-5 py-4"
-          >
-            <Text className="text-center text-sm font-semibold text-[#07110d]">
-              Send email sign-in link
+              Continue with Google
             </Text>
           </Pressable>
           <Pressable
