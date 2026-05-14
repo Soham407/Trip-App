@@ -2,9 +2,17 @@
 
 Runbook for routing bank / UPI alerts from Gmail into the Trip App as imported expenses.
 
-**Status:** Code not yet built. This document captures the design and the manual steps you'll run **after** the webhook is shipped.
+**Status (May 14 2026):** Edge Function deployed to the linked Supabase project. Basic Auth secrets are set. Five-path smoke test passed against production (`401` on bad auth; `200 dropped` on missing X-Forwarded-For; `200 dropped` on unknown forwarder; `200 imported` on a valid UPI body with a seeded forwarder; `200 parse_failed` on an unrecognizable body). What's left is on the **operator side** — sections "One-time setup" steps 1, 3, and 4 below.
 
-**Decision (May 14 2026):** Ship as **B-lite** for the May 18 trip — only Soham's Gmail forwards on day one. Family members opt in later with zero code changes.
+**Decision:** Ship as **B-lite** for the May 18 trip — only Soham's Gmail forwards on day one. Family members opt in later with zero code changes.
+
+**Deployed webhook URL:** `https://oyospqalwrambxnfehxr.supabase.co/functions/v1/parse-inbound-email`
+
+**Postmark webhook URL to paste in Postmark** (treat as a secret — it embeds the Basic Auth password):
+```
+https://postmark-inbound:443b548e8f0f3fd7b0912c32c36d514a23d07da18796c347@oyospqalwrambxnfehxr.supabase.co/functions/v1/parse-inbound-email
+```
+The credentials are also stored as `INBOUND_WEBHOOK_USER` / `INBOUND_WEBHOOK_PASSWORD` secrets on the Edge Function. Rotate by re-running `supabase secrets set ...` and updating Postmark.
 
 ---
 
@@ -55,24 +63,20 @@ These are the manual steps after the Edge Function and webhook are deployed. The
 2. Create a server (any name — e.g. `trip-app-inbound`).
 3. In the server, go to **Default Inbound Stream**.
 4. Note the **inbound address** — it looks like `abc123def456@inbound.postmarkapp.com`. This is the address every family member will forward to.
-5. Under **Webhook URL**, paste the deployed Edge Function URL: `https://oyospqalwrambxnfehxr.supabase.co/functions/v1/parse-inbound-email`.
+5. Under **Webhook URL**, paste the full URL with embedded Basic Auth credentials shown at the top of this document (the `https://postmark-inbound:…@oyospqalwrambxnfehxr.supabase.co/...` form).
 6. Save.
 
-### Step 2 — Configure webhook auth (HTTP Basic Auth)
+### Step 2 — Configure webhook auth (already done on May 14 2026)
 
-Postmark does not sign inbound requests by default. The Edge Function gates incoming POSTs with HTTP Basic Auth, with credentials baked into the webhook URL Postmark calls.
+The Edge Function is gated by HTTP Basic Auth. Credentials are set as Supabase secrets (`INBOUND_WEBHOOK_USER=postmark-inbound`, `INBOUND_WEBHOOK_PASSWORD=...`). Postmark will pass them via the URL form shown at the top of this document.
 
-1. Pick a username and a long random password (e.g. `openssl rand -hex 24`).
-2. In Postmark, set the inbound webhook URL to:
-   `https://<user>:<password>@oyospqalwrambxnfehxr.supabase.co/functions/v1/parse-inbound-email`
-3. Add the same credentials to Supabase secrets so the function can compare:
+To rotate the password (do this if the URL leaks):
 
-   ```sh
-   supabase secrets set INBOUND_WEBHOOK_USER=<user>
-   supabase secrets set INBOUND_WEBHOOK_PASSWORD=<password>
-   ```
-
-4. The Edge Function reads the `Authorization: Basic …` header on every request and returns `401` if it doesn't match. Treat the full URL as a secret; rotate the password if it ever leaks.
+```sh
+NEW=$(openssl rand -hex 24)
+supabase secrets set INBOUND_WEBHOOK_PASSWORD=$NEW --project-ref oyospqalwrambxnfehxr
+# then update the Postmark webhook URL with the new password
+```
 
 ### Step 3 — Set up forwarding from your own Gmail (B-lite scope)
 
