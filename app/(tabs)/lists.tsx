@@ -7,6 +7,7 @@ import {
   getListSuggestions,
   getTripListsByKind,
   removeVoiceDictationReviewItem,
+  toggleTripListItem,
   type TripListKind,
   type VoiceDictationReview
 } from "@/data/currentTripStore";
@@ -58,10 +59,10 @@ export default function ListsScreen() {
   };
 
   return (
-    <TripScreenShell title="Lists" subtitle="Shopping and packing for this trip">
-      <ScrollView className="flex-1" contentContainerClassName="gap-3 pb-6">
-        <TripCard>
-          <View className="mb-3 flex-row gap-2">
+    <TripScreenShell title="Trip Lists" subtitle="Shopping and packing for this trip">
+      <ScrollView className="flex-1" contentContainerClassName="gap-4 pb-28">
+        <TripCard className="bg-[#f7fbf8]">
+          <View className="mb-4 flex-row gap-2 rounded-full bg-[#eef4f1] p-1">
             {LIST_TABS.map((tab) => (
               <TripChip
                 key={tab.kind}
@@ -76,7 +77,7 @@ export default function ListsScreen() {
             Add multiple items (freeform or autocomplete)
           </Text>
           <TextInput
-            className="mt-2 rounded-2xl border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900"
+            className="mt-2 min-h-20 rounded-[24px] border border-zinc-100 bg-white px-4 py-3 text-sm text-zinc-900"
             placeholder="Try: milk, eggs and bananas"
             value={draftText}
             onChangeText={setDraftText}
@@ -98,9 +99,9 @@ export default function ListsScreen() {
           <View className="mt-3 flex-row items-center gap-2">
             <Pressable
               onPress={openReviewFromDraft}
-              className="rounded-full border border-teal-600 bg-teal-50 px-4 py-2"
+              className="rounded-full bg-[#caff68] px-5 py-3"
             >
-              <Text className="text-xs font-semibold uppercase tracking-wide text-teal-700">
+              <Text className="text-sm font-semibold text-[#07110d]">
                 Dictate + review
               </Text>
             </Pressable>
@@ -116,13 +117,30 @@ export default function ListsScreen() {
 
           return (
             <TripCard key={list.id}>
-              <Text className="text-base font-semibold text-zinc-900">{list.title}</Text>
-              <Text className="mt-1 text-sm text-zinc-600">
-                {completeLabel} {checkedCount}/{totalCount}
-              </Text>
+              <View className="flex-row items-center justify-between">
+                <View>
+                  <Text className="text-xl font-semibold text-[#07110d]">{list.title}</Text>
+                  <Text className="mt-1 text-sm text-zinc-500">
+                    {completeLabel} {checkedCount}/{totalCount}
+                  </Text>
+                </View>
+                <View className="h-14 w-14 items-center justify-center rounded-full bg-[#eef4f1]">
+                  <Text className="text-base font-bold text-[#07110d]">
+                    {totalCount === 0 ? 0 : Math.round((checkedCount / totalCount) * 100)}%
+                  </Text>
+                </View>
+              </View>
               <View className="mt-3 flex-row flex-wrap gap-2">
                 {list.items.map((item) => (
-                  <TripChip key={item.id} label={item.label} selected={item.checked} />
+                  <TripChip
+                    key={item.id}
+                    label={item.label}
+                    selected={item.checked}
+                    onPress={() => {
+                      toggleTripListItem({ kind: activeTab, itemId: item.id });
+                      setRefreshToken((token) => token + 1);
+                    }}
+                  />
                 ))}
               </View>
             </TripCard>

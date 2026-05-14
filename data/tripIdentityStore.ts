@@ -1,3 +1,10 @@
+import {
+  readRepositoryState,
+  resetRepositoryState,
+  writeRepositoryState,
+  type SyncStatus
+} from "@/data/localFirstRepository";
+
 export type AuthProvider = "google";
 
 export type TripIdentityUser = {
@@ -24,6 +31,7 @@ export type FamilyGroup = {
   readonly ownerUserId: string;
   readonly members: readonly FamilyGroupMemberTemplate[];
   readonly createdAt: string;
+  readonly syncStatus: SyncStatus;
 };
 
 export type TripRecord = {
@@ -37,6 +45,7 @@ export type TripRecord = {
   readonly createdAt: string;
   readonly sourceFamilyGroupId?: string;
   readonly sourceTripId?: string;
+  readonly syncStatus: SyncStatus;
 };
 
 export type TripMember = {
@@ -47,6 +56,7 @@ export type TripMember = {
   readonly inviteStatus: "pending" | "accepted";
   readonly invitedByUserId: string;
   readonly inviteToken: string;
+  readonly syncStatus: SyncStatus;
 };
 
 export type TripFields = {
@@ -82,6 +92,7 @@ export type CreateTripFromDuplicateInput = {
 type TripIdentityState = {
   sequence: number;
   timestampCursor: number;
+  sessionUserId?: string;
   users: TripIdentityUser[];
   groups: FamilyGroup[];
   trips: TripRecord[];
@@ -129,6 +140,7 @@ function buildInitialState(): TripIdentityState {
     name: "Primary Family",
     ownerUserId: INITIAL_OWNER_USER.id,
     createdAt: "2026-01-01T00:00:01Z",
+    syncStatus: "synced",
     members: [
       { id: "group-member-001", displayName: "Soham", email: "soham@example.com" },
       { id: "group-member-002", displayName: "Ava", email: "ava@example.com" },
@@ -139,14 +151,15 @@ function buildInitialState(): TripIdentityState {
 
   const activeTrip: TripRecord = {
     id: "trip-active-001",
-    destination: "Lisbon",
+    destination: "Goa",
     startsOn: "2026-06-12",
     endsOn: "2026-06-19",
-    currency: "EUR",
+    currency: "INR",
     status: "active",
     createdByUserId: INITIAL_OWNER_USER.id,
     createdAt: "2026-01-01T00:00:02Z",
-    sourceFamilyGroupId: familyGroup.id
+    sourceFamilyGroupId: familyGroup.id,
+    syncStatus: "synced"
   };
 
   const activeTripMembers: TripMember[] = familyGroup.members.map((member, index) => ({
@@ -156,7 +169,8 @@ function buildInitialState(): TripIdentityState {
     email: sanitizeEmail(member.email),
     inviteStatus: "accepted",
     invitedByUserId: INITIAL_OWNER_USER.id,
-    inviteToken: `invite-seed-${index + 1}`
+    inviteToken: `invite-seed-${index + 1}`,
+    syncStatus: "synced"
   }));
 
   return {
@@ -169,7 +183,11 @@ function buildInitialState(): TripIdentityState {
   };
 }
 
-let state: TripIdentityState = buildInitialState();
+let state: TripIdentityState = readRepositoryState("trip-identity", buildInitialState);
+
+function saveTripIdentityState(): void {
+  writeRepositoryState("trip-identity", state);
+}
 
 function nextId(prefix: string): string {
   state.sequence += 1;
@@ -191,12 +209,13 @@ function createTripRecord(input: TripFields & { createdByUserId: string; sourceF
     destination: input.destination,
     startsOn: input.startsOn,
     endsOn: input.endsOn,
-    currency: input.currency,
+    currency: "INR",
     status: "active",
     createdByUserId: input.createdByUserId,
     createdAt: nextTimestamp(),
     sourceFamilyGroupId: input.sourceFamilyGroupId,
-    sourceTripId: input.sourceTripId
+    sourceTripId: input.sourceTripId,
+    syncStatus: "pending"
   };
 
   state.trips.push(record);
@@ -215,7 +234,8 @@ function createSnapshotMembers(
     email: sanitizeEmail(member.email),
     inviteStatus: "pending" as const,
     invitedByUserId,
-    inviteToken: buildInviteToken(tripId, member.email)
+    inviteToken: buildInviteToken(tripId, member.email),
+    syncStatus: "pending" as const
   }));
 
   state.tripMembers.push(...snapshotMembers);
@@ -223,7 +243,7 @@ function createSnapshotMembers(
 }
 
 export function resetTripIdentityStoreForTests(): void {
-  state = buildInitialState();
+  state = resetRepositoryState("trip-identity", buildInitialState());
 }
 
 export function getAuthPolicy(): AuthPolicy {
@@ -242,6 +262,8 @@ export function authenticateWithProvider(
   const existingUser = state.users.find((user) => sanitizeEmail(user.email) === email);
 
   if (existingUser) {
+    state.sessionUserId = existingUser.id;
+    saveTripIdentityState();
     return cloneUser(existingUser);
   }
 
@@ -253,7 +275,25 @@ export function authenticateWithProvider(
   };
 
   state.users.push(user);
+  state.sessionUserId = user.id;
+  saveTripIdentityState();
   return cloneUser(user);
+}
+
+export function getAuthenticatedUser(): TripIdentityUser | undefined {
+  const sessionUserId = state.sessionUserId;
+
+  if (!sessionUserId) {
+    return undefined;
+  }
+
+  const user = state.users.find((candidate) => candidate.id === sessionUserId);
+  return user ? cloneUser(user) : undefined;
+}
+
+export function signOut(): void {
+  state.sessionUserId = undefined;
+  saveTripIdentityState();
 }
 
 export function createFamilyGroup(input: CreateFamilyGroupInput): FamilyGroup {
@@ -266,6 +306,7 @@ export function createFamilyGroup(input: CreateFamilyGroupInput): FamilyGroup {
     name: input.name,
     ownerUserId: input.ownerUserId,
     createdAt: nextTimestamp(),
+    syncStatus: "pending",
     members: input.members.map((member) => ({
       id: nextId("group-member"),
       displayName: member.displayName,
@@ -274,6 +315,7 @@ export function createFamilyGroup(input: CreateFamilyGroupInput): FamilyGroup {
   };
 
   state.groups.push(group);
+  saveTripIdentityState();
   return cloneGroup(group);
 }
 
@@ -320,6 +362,7 @@ export function createTripFromFamilyGroup(input: CreateTripFromFamilyGroupInput)
   });
 
   createSnapshotMembers(trip.id, input.createdByUserId, familyGroup.members);
+  saveTripIdentityState();
   return cloneTrip(trip);
 }
 
@@ -337,6 +380,7 @@ export function createTripFromCurrentMembers(input: CreateTripFromCurrentMembers
   });
 
   createSnapshotMembers(trip.id, input.createdByUserId, sourceMembers);
+  saveTripIdentityState();
   return cloneTrip(trip);
 }
 
@@ -375,5 +419,6 @@ export function createTripFromDuplicate(input: CreateTripFromDuplicateInput): Tr
   });
 
   createSnapshotMembers(trip.id, input.createdByUserId, sourceMembers);
+  saveTripIdentityState();
   return cloneTrip(trip);
 }

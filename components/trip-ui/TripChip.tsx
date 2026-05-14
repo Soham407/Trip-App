@@ -12,11 +12,11 @@ export function TripChip({ label, selected = false, onPress }: TripChipProps) {
       onPress={onPress}
       className={
         selected
-          ? "rounded-full border border-teal-600 bg-teal-600 px-4 py-2"
-          : "rounded-full border border-zinc-300 bg-zinc-50 px-4 py-2"
+          ? "rounded-full border border-[#caff68] bg-[#caff68] px-5 py-2.5 shadow-sm"
+          : "rounded-full border border-zinc-200 bg-white/85 px-5 py-2.5"
       }
     >
-      <Text className={selected ? "text-xs font-semibold text-white" : "text-xs font-semibold text-zinc-700"}>
+      <Text className={selected ? "text-sm font-semibold text-[#07110d]" : "text-sm font-medium text-zinc-700"}>
         {label}
       </Text>
     </Pressable>

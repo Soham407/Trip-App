@@ -3,6 +3,12 @@ import {
   getCurrentTripIdentity,
   getTripMembers
 } from "@/data/tripIdentityStore";
+import {
+  readRepositoryState,
+  resetRepositoryState,
+  writeRepositoryState,
+  type SyncStatus
+} from "@/data/localFirstRepository";
 
 export type CurrentTrip = {
   readonly id: string;
@@ -27,6 +33,7 @@ export type TripListItem = {
   readonly id: string;
   readonly label: string;
   readonly checked: boolean;
+  readonly syncStatus?: SyncStatus;
 };
 
 export type TripList = {
@@ -35,6 +42,7 @@ export type TripList = {
   readonly kind: TripListKind;
   readonly title: string;
   readonly items: readonly TripListItem[];
+  readonly syncStatus?: SyncStatus;
 };
 
 export type ShoppingList = TripList & {
@@ -232,6 +240,7 @@ export type FailedExpenseIngestionLog = {
   readonly rawPayload: string;
   readonly reason: string;
   readonly createdAt: string;
+  readonly syncStatus: SyncStatus;
 };
 
 type CurrentTripStoreState = {
@@ -287,8 +296,8 @@ function buildInitialState(): CurrentTripStoreState {
         {
           id: "entry-001",
           tripId: "trip-active-001",
-          label: "Metro cards",
-          amount: 29.5,
+          label: "Konkan toll plaza",
+          amount: 1840,
           paidBy: "Soham",
           createdAt: "2026-05-01T09:30:00Z",
           categoryParentId: "transport",
@@ -300,8 +309,8 @@ function buildInitialState(): CurrentTripStoreState {
         {
           id: "entry-002",
           tripId: "trip-active-001",
-          label: "Apartment deposit",
-          amount: 120,
+          label: "Beach stay deposit",
+          amount: 12000,
           paidBy: "Ava",
           createdAt: "2026-05-02T14:15:00Z",
           categoryParentId: "stay",
@@ -324,11 +333,12 @@ function buildInitialState(): CurrentTripStoreState {
   };
 }
 
-let state: CurrentTripStoreState = buildInitialState();
+let state: CurrentTripStoreState = readRepositoryState("current-trip", buildInitialState);
 
 const listeners = new Set<() => void>();
 
 function notifySubscribers(): void {
+  writeRepositoryState("current-trip", state);
   listeners.forEach((listener) => listener());
 }
 
@@ -395,6 +405,7 @@ function ensureTripLists(tripId: string): TripList[] {
   ];
 
   state.listsByTrip[tripId] = seeded;
+  writeRepositoryState("current-trip", state);
   return seeded;
 }
 
@@ -612,7 +623,7 @@ function parseImportedExpensePayload(payload: string):
 }
 
 export function resetCurrentTripStoreForTests(): void {
-  state = buildInitialState();
+  state = resetRepositoryState("current-trip", buildInitialState());
   notifySubscribers();
 }
 
@@ -735,6 +746,46 @@ export function commitVoiceDictationReview(
     listId: updatedList.id,
     addedCount: nextItems.length
   };
+}
+
+export function toggleTripListItem(input: {
+  readonly kind: TripListKind;
+  readonly itemId: string;
+}): TripListItem {
+  const tripId = getCurrentTrip().id;
+  const tripLists = ensureTripLists(tripId);
+  const targetList = tripLists.find((list) =>
+    list.kind === input.kind && list.items.some((item) => item.id === input.itemId)
+  );
+
+  if (!targetList) {
+    throw new Error(`List item not found: ${input.itemId}`);
+  }
+
+  let toggledItem: TripListItem | undefined;
+  const updatedList: TripList = {
+    ...targetList,
+    items: targetList.items.map((item) => {
+      if (item.id !== input.itemId) {
+        return item;
+      }
+
+      toggledItem = { ...item, checked: !item.checked };
+      return toggledItem;
+    })
+  };
+
+  state.listsByTrip[tripId] = tripLists.map((list) =>
+    list.id === targetList.id ? updatedList : list
+  );
+
+  notifySubscribers();
+
+  if (!toggledItem) {
+    throw new Error(`List item not found: ${input.itemId}`);
+  }
+
+  return cloneListItem(toggledItem);
 }
 
 export function getListSuggestions(kind: TripListKind, query: string): readonly string[] {
@@ -1046,7 +1097,8 @@ export function ingestSharedExpenseAlert(input: IngestSharedExpenseAlertInput): 
       source: input.source,
       rawPayload: input.payload,
       reason: parsed.error,
-      createdAt: nextTimestamp()
+      createdAt: nextTimestamp(),
+      syncStatus: "pending"
     };
 
     state.failedLogsByTrip[tripId] = [...(state.failedLogsByTrip[tripId] ?? []), failedLog];

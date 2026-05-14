@@ -28,11 +28,11 @@ describe("trip UI contracts", () => {
   });
 
   it("maps ledger entries into sorted transaction feed rows", () => {
-    const feedRows = buildLedgerFeedRows(getLedgerEntries(), "EUR");
+    const feedRows = buildLedgerFeedRows(getLedgerEntries(), "INR");
 
     expect(feedRows.length).toBe(getLedgerEntries().length);
     expect(feedRows[0].createdAt >= feedRows[1].createdAt).toBe(true);
-    expect(feedRows[0].amountLabel.startsWith("EUR ")).toBe(true);
+    expect(feedRows[0].amountLabel.startsWith("-₹")).toBe(true);
     expect(feedRows[0].meta.includes("Paid by")).toBe(true);
     expect(feedRows[0].categoryLabel.length).toBeGreaterThan(0);
   });

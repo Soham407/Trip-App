@@ -1,0 +1,76 @@
+import { router } from "expo-router";
+import { useState } from "react";
+import { Pressable, Text, TextInput, View } from "react-native";
+
+import { createInitialTrip } from "@/data/appLaunchService";
+import { getAuthenticatedUser, getFamilyGroups } from "@/data/tripIdentityStore";
+
+export default function TripSetupScreen() {
+  const user = getAuthenticatedUser();
+  const familyGroup = getFamilyGroups()[0];
+  const [destination, setDestination] = useState("Goa");
+  const [startsOn, setStartsOn] = useState("2026-06-12");
+  const [endsOn, setEndsOn] = useState("2026-06-19");
+  const [message, setMessage] = useState<string>();
+
+  return (
+    <View className="w-full max-w-[430px] flex-1 self-center bg-[#eef4f1] px-5 py-8">
+      <View className="flex-1 justify-center">
+        <View className="rounded-[32px] bg-white/95 p-5 shadow-sm">
+          <Text className="text-3xl font-bold text-[#07110d]">Create trip</Text>
+          <Text className="mt-2 text-sm leading-5 text-zinc-600">
+            INR-only trip workspace with cloned family invites.
+          </Text>
+          <TextInput
+            value={destination}
+            onChangeText={setDestination}
+            placeholder="Destination"
+            className="mt-5 rounded-2xl border border-zinc-100 bg-[#f7fbf8] px-4 py-3 text-sm text-zinc-900"
+          />
+          <TextInput
+            value={startsOn}
+            onChangeText={setStartsOn}
+            placeholder="YYYY-MM-DD"
+            className="mt-2 rounded-2xl border border-zinc-100 bg-[#f7fbf8] px-4 py-3 text-sm text-zinc-900"
+          />
+          <TextInput
+            value={endsOn}
+            onChangeText={setEndsOn}
+            placeholder="YYYY-MM-DD"
+            className="mt-2 rounded-2xl border border-zinc-100 bg-[#f7fbf8] px-4 py-3 text-sm text-zinc-900"
+          />
+          <Pressable
+            onPress={() => {
+              if (!user) {
+                router.replace("/auth");
+                return;
+              }
+
+              if (!familyGroup) {
+                router.replace("/setup/family");
+                return;
+              }
+
+              try {
+                createInitialTrip({
+                  familyGroupId: familyGroup.id,
+                  createdByUserId: user.id,
+                  destination,
+                  startsOn,
+                  endsOn
+                });
+                router.replace("/(tabs)");
+              } catch (error) {
+                setMessage(error instanceof Error ? error.message : "Unable to create trip.");
+              }
+            }}
+            className="mt-5 rounded-full bg-[#caff68] px-5 py-4"
+          >
+            <Text className="text-center text-sm font-semibold text-[#07110d]">Enter trip workspace</Text>
+          </Pressable>
+          {message ? <Text className="mt-3 text-sm text-rose-700">{message}</Text> : null}
+        </View>
+      </View>
+    </View>
+  );
+}

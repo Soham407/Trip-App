@@ -9,7 +9,8 @@ import {
   getShoppingLists,
   getTripListsByKind,
   removeVoiceDictationReviewItem,
-  resetCurrentTripStoreForTests
+  resetCurrentTripStoreForTests,
+  toggleTripListItem
 } from "@/data/currentTripStore";
 
 describe("shopping and packing lists with voice dictation", () => {
@@ -74,6 +75,25 @@ describe("shopping and packing lists with voice dictation", () => {
 
     expect(commitResult.addedCount).toBe(2);
     expect(afterCount - beforeCount).toBe(2);
+  });
+
+  it("toggles shopping and packing checklist items", () => {
+    const shoppingItem = getTripListsByKind("shopping")[0]?.items[0];
+
+    if (!shoppingItem) {
+      throw new Error("expected seeded shopping item");
+    }
+
+    const toggled = toggleTripListItem({ kind: "shopping", itemId: shoppingItem.id });
+    const refreshedItem = getTripListsByKind("shopping")[0]?.items.find(
+      (item) => item.id === shoppingItem.id
+    );
+
+    expect(toggled.checked).toBe(!shoppingItem.checked);
+    expect(refreshedItem?.checked).toBe(!shoppingItem.checked);
+    expect(() => toggleTripListItem({ kind: "packing", itemId: shoppingItem.id })).toThrow(
+      /list item not found/i
+    );
   });
 
   it("learns autocomplete suggestions from family history across trips", () => {

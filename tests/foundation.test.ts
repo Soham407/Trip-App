@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { TAB_ROUTES } from "@/navigation/tabs";
 import {
+  getDataLayerRuntime,
+  readRepositoryState,
+  writeRepositoryState
+} from "@/data/localFirstRepository";
+import {
   getCurrentTrip,
   getDashboardSnapshot,
   getLedgerEntries,
-  getPackingLists
+  getPackingLists,
+  resetCurrentTripStoreForTests
 } from "@/data/currentTripStore";
 import { getLocalDataScaffold } from "@/data/localDataScaffold";
 
@@ -23,17 +29,18 @@ describe("foundation contracts", () => {
     ]);
   });
 
-  it("serves mocked active-trip data with no backend", () => {
+  it("serves the local-first active trip before remote sync", () => {
     const trip = getCurrentTrip();
 
     expect(trip.id).toBe("trip-active-001");
-    expect(trip.destination).toBe("Lisbon");
+    expect(trip.destination).toBe("Goa");
+    expect(trip.currency).toBe("INR");
     expect(getDashboardSnapshot().tripId).toBe(trip.id);
     expect(getPackingLists().length).toBeGreaterThan(0);
     expect(getLedgerEntries().length).toBeGreaterThan(0);
   });
 
-  it("exposes a local data scaffold for future WatermelonDB and sync work", () => {
+  it("exposes the local-first WatermelonDB and Supabase sync boundary", () => {
     const scaffold = getLocalDataScaffold();
 
     expect(scaffold.schemaVersion).toBe(2);
@@ -45,6 +52,23 @@ describe("foundation contracts", () => {
       "packing_lists",
       "ledger_entries"
     ]);
-    expect(scaffold.syncMode).toBe("local-only");
+    expect(scaffold.syncMode).toBe("local-first-sync-ready");
+    expect(scaffold.notes.storageAdapter).toBe("watermelondb");
+    expect(scaffold.notes.syncProvider).toBe("supabase");
+    expect(getDataLayerRuntime()).toMatchObject({
+      localAdapter: "watermelondb",
+      remoteAdapter: "supabase",
+      authProvider: "google-oauth-only",
+      editLockTtlSeconds: 30
+    });
+  });
+
+  it("persists repository namespaces behind the store layer", () => {
+    writeRepositoryState("current-trip", { marker: "saved" });
+
+    expect(readRepositoryState("current-trip", () => ({ marker: "seed" }))).toEqual({
+      marker: "saved"
+    });
+    resetCurrentTripStoreForTests();
   });
 });

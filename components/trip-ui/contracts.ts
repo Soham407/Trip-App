@@ -86,6 +86,30 @@ export function getSubcategoriesForParent(parentId?: string): readonly TripSubca
   return parent?.subcategories ?? [];
 }
 
+export function formatTripCurrency(currency: string, amount: number): string {
+  const normalizedCurrency = currency.trim().toUpperCase();
+
+  if (normalizedCurrency === "INR") {
+    return `₹${amount.toLocaleString("en-IN", {
+      maximumFractionDigits: Number.isInteger(amount) ? 0 : 2,
+      minimumFractionDigits: Number.isInteger(amount) ? 0 : 2
+    })}`;
+  }
+
+  return `${normalizedCurrency} ${amount.toLocaleString("en-IN", {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 2
+  })}`;
+}
+
+function amountPrefix(entry: LedgerEntry): string {
+  if (entry.deletedAt) {
+    return "";
+  }
+
+  return entry.source === "manual" || entry.source === "email" || entry.source === "webhook" ? "-" : "";
+}
+
 export function buildLedgerFeedRows(
   entries: readonly LedgerEntry[],
   currency: string
@@ -110,7 +134,7 @@ export function buildLedgerFeedRows(
       return {
         id: entry.id,
         title: entry.label,
-        amountLabel: `${currency} ${entry.amount.toFixed(2)}`,
+        amountLabel: `${amountPrefix(entry)}${formatTripCurrency(currency, entry.amount)}`,
         meta: metaParts.join(" • "),
         categoryLabel: entry.deletedAt
           ? "Deleted"

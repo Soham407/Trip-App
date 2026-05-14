@@ -8,10 +8,10 @@ export type LocalDataScaffold = {
     "packing_lists",
     "ledger_entries"
   ];
-  syncMode: "local-only";
+  syncMode: "local-first-sync-ready";
   notes: {
-    storageAdapter: "watermelondb-planned";
-    syncProvider: "supabase-planned";
+    storageAdapter: "watermelondb";
+    syncProvider: "supabase";
     activeTripScope: "most-recent-active-trip";
     membershipAccess: "invite-only";
     authProvider: "google-oauth-only";
@@ -28,10 +28,10 @@ const LOCAL_DATA_SCAFFOLD: LocalDataScaffold = {
     "packing_lists",
     "ledger_entries"
   ],
-  syncMode: "local-only",
+  syncMode: "local-first-sync-ready",
   notes: {
-    storageAdapter: "watermelondb-planned",
-    syncProvider: "supabase-planned",
+    storageAdapter: "watermelondb",
+    syncProvider: "supabase",
     activeTripScope: "most-recent-active-trip",
     membershipAccess: "invite-only",
     authProvider: "google-oauth-only"

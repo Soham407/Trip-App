@@ -13,12 +13,12 @@ export function TripBottomSheet({ visible, title, onClose, children }: TripBotto
     <Modal animationType="fade" transparent visible={visible} onRequestClose={onClose}>
       <View className="flex-1 justify-end bg-black/35">
         <Pressable className="flex-1" onPress={onClose} />
-        <View className="rounded-t-3xl bg-white px-5 pb-7 pt-5">
+        <View className="rounded-t-[34px] bg-white px-5 pb-8 pt-5">
           <View className="mb-4 h-1.5 w-12 self-center rounded-full bg-zinc-300" />
           <View className="mb-4 flex-row items-center justify-between">
-            <Text className="text-lg font-semibold text-zinc-900">{title}</Text>
-            <Pressable onPress={onClose} className="rounded-full bg-zinc-100 px-3 py-1.5">
-              <Text className="text-xs font-semibold uppercase tracking-wide text-zinc-700">Close</Text>
+            <Text className="text-lg font-semibold text-[#07110d]">{title}</Text>
+            <Pressable onPress={onClose} className="rounded-full bg-[#eef4f1] px-3 py-1.5">
+              <Text className="text-xs font-semibold text-zinc-700">Close</Text>
             </Pressable>
           </View>
           {children}
