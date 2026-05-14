@@ -1,8 +1,9 @@
 import { router } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 
 import { createReusableFamilyGroup, getLaunchRoute } from "@/data/appLaunchService";
+import { hydrateStoresFromSupabase } from "@/data/cloudBootstrap";
 import { getAuthenticatedUser } from "@/data/tripIdentityStore";
 
 export default function FamilySetupScreen() {
@@ -12,6 +13,10 @@ export default function FamilySetupScreen() {
     user ? `${user.displayName} <${user.email}>` : ""
   );
   const [message, setMessage] = useState<string>();
+
+  useEffect(() => {
+    void hydrateStoresFromSupabase().catch(() => {});
+  }, []);
 
   return (
     <View className="w-full max-w-[430px] flex-1 self-center bg-[#eef4f1] px-5 py-8">

@@ -5,6 +5,8 @@ import {
   getAllTripIdentities,
   getAuthenticatedUser,
   getFamilyGroups,
+  removeLocalFamilyGroup,
+  removeLocalTripWithMembers,
   type FamilyGroup,
   type TripIdentityUser,
   type TripRecord
@@ -110,24 +112,29 @@ export async function createReusableFamilyGroup(input: {
     members
   });
 
-  const { error } = await supabase.from("family_groups").upsert({
-    id: group.id,
-    name: group.name,
-    owner_user_id: group.ownerUserId,
-    created_at: group.createdAt,
-    sync_status: group.syncStatus
-  });
-  if (error) throw new Error(`Family group sync failed: ${error.message}`);
+  try {
+    const { error } = await supabase.from("family_groups").upsert({
+      id: group.id,
+      name: group.name,
+      owner_user_id: group.ownerUserId,
+      created_at: group.createdAt,
+      sync_status: group.syncStatus
+    });
+    if (error) throw new Error(`Family group sync failed: ${error.message}`);
 
-  const { error: membersError } = await supabase.from("family_group_members").upsert(
-    group.members.map((member) => ({
-      id: member.id,
-      family_group_id: group.id,
-      display_name: member.displayName,
-      email: member.email
-    }))
-  );
-  if (membersError) throw new Error(`Family member sync failed: ${membersError.message}`);
+    const { error: membersError } = await supabase.from("family_group_members").upsert(
+      group.members.map((member) => ({
+        id: member.id,
+        family_group_id: group.id,
+        display_name: member.displayName,
+        email: member.email
+      }))
+    );
+    if (membersError) throw new Error(`Family member sync failed: ${membersError.message}`);
+  } catch (syncError) {
+    removeLocalFamilyGroup(group.id);
+    throw syncError;
+  }
 
   return group;
 }
@@ -148,35 +155,40 @@ export async function createInitialTrip(input: {
     currency: "INR"
   });
 
-  const { error } = await supabase.from("trips").upsert({
-    id: trip.id,
-    destination: trip.destination,
-    starts_on: trip.startsOn,
-    ends_on: trip.endsOn,
-    currency: trip.currency,
-    status: trip.status,
-    created_by_user_id: trip.createdByUserId,
-    created_at: trip.createdAt,
-    source_family_group_id: trip.sourceFamilyGroupId ?? null,
-    source_trip_id: trip.sourceTripId ?? null,
-    sync_status: trip.syncStatus
-  });
-  if (error) throw new Error(`Trip sync failed: ${error.message}`);
+  try {
+    const { error } = await supabase.from("trips").upsert({
+      id: trip.id,
+      destination: trip.destination,
+      starts_on: trip.startsOn,
+      ends_on: trip.endsOn,
+      currency: trip.currency,
+      status: trip.status,
+      created_by_user_id: trip.createdByUserId,
+      created_at: trip.createdAt,
+      source_family_group_id: trip.sourceFamilyGroupId ?? null,
+      source_trip_id: trip.sourceTripId ?? null,
+      sync_status: trip.syncStatus
+    });
+    if (error) throw new Error(`Trip sync failed: ${error.message}`);
 
-  const tripMembers = (await import("@/data/tripIdentityStore")).getTripMembers(trip.id);
-  const { error: membersError } = await supabase.from("trip_members").upsert(
-    tripMembers.map((member) => ({
-      id: member.id,
-      trip_id: member.tripId,
-      display_name: member.displayName,
-      email: member.email,
-      invite_status: member.inviteStatus,
-      invited_by_user_id: member.invitedByUserId,
-      invite_token: member.inviteToken,
-      sync_status: member.syncStatus
-    }))
-  );
-  if (membersError) throw new Error(`Trip member sync failed: ${membersError.message}`);
+    const tripMembers = (await import("@/data/tripIdentityStore")).getTripMembers(trip.id);
+    const { error: membersError } = await supabase.from("trip_members").upsert(
+      tripMembers.map((member) => ({
+        id: member.id,
+        trip_id: member.tripId,
+        display_name: member.displayName,
+        email: member.email,
+        invite_status: member.inviteStatus,
+        invited_by_user_id: member.invitedByUserId,
+        invite_token: member.inviteToken,
+        sync_status: member.syncStatus
+      }))
+    );
+    if (membersError) throw new Error(`Trip member sync failed: ${membersError.message}`);
+  } catch (syncError) {
+    removeLocalTripWithMembers(trip.id);
+    throw syncError;
+  }
 
   return trip;
 }

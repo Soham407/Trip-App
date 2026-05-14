@@ -321,6 +321,17 @@ export function signOut(): void {
   saveTripIdentityState();
 }
 
+export function removeLocalFamilyGroup(familyGroupId: string): void {
+  state.groups = state.groups.filter((group) => group.id !== familyGroupId);
+  saveTripIdentityState();
+}
+
+export function removeLocalTripWithMembers(tripId: string): void {
+  state.trips = state.trips.filter((trip) => trip.id !== tripId);
+  state.tripMembers = state.tripMembers.filter((member) => member.tripId !== tripId);
+  saveTripIdentityState();
+}
+
 export function createFamilyGroup(input: CreateFamilyGroupInput): FamilyGroup {
   if (input.members.length === 0) {
     throw new Error("Family group requires at least one member");

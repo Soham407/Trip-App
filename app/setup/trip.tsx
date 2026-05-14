@@ -1,17 +1,26 @@
 import { router } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 
 import { createInitialTrip } from "@/data/appLaunchService";
+import { hydrateStoresFromSupabase } from "@/data/cloudBootstrap";
 import { getAuthenticatedUser, getFamilyGroups } from "@/data/tripIdentityStore";
 
 export default function TripSetupScreen() {
-  const user = getAuthenticatedUser();
-  const familyGroup = getFamilyGroups()[0];
+  const [hydrated, setHydrated] = useState(false);
   const [destination, setDestination] = useState("");
   const [startsOn, setStartsOn] = useState("");
   const [endsOn, setEndsOn] = useState("");
   const [message, setMessage] = useState<string>();
+
+  useEffect(() => {
+    void hydrateStoresFromSupabase()
+      .catch(() => {})
+      .finally(() => setHydrated(true));
+  }, []);
+
+  const user = getAuthenticatedUser();
+  const familyGroup = hydrated ? getFamilyGroups()[0] : undefined;
 
   return (
     <View className="w-full max-w-[430px] flex-1 self-center bg-[#eef4f1] px-5 py-8">
@@ -40,6 +49,7 @@ export default function TripSetupScreen() {
             className="mt-2 rounded-2xl border border-zinc-100 bg-[#f7fbf8] px-4 py-3 text-sm text-zinc-900"
           />
           <Pressable
+            disabled={!hydrated}
             onPress={async () => {
               if (!user) {
                 router.replace("/auth");
