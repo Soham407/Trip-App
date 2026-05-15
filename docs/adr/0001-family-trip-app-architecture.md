@@ -26,15 +26,15 @@ The product decisions already resolved are:
 
 ## Decision
 
-Use the following stack and product architecture for the prototype and the future app:
+Use the following stack and product architecture for the current prototype:
 
 - React Native with Expo
 - Expo Router for navigation
 - NativeWind for styling
-- WatermelonDB for local data and offline-ready state
+- Repository-backed local store over browser storage / in-memory state for prototype local data
 - Supabase for authentication, persistence, and sync API
-- Supabase Edge Functions for webhook handling and AI integration
-- Groq for transcription and entity extraction
+- Supabase Edge Functions for webhook handling
+- Browser speech recognition for web dictation in the prototype
 - Google OAuth only through Supabase
 
 The prototype should model:
@@ -56,4 +56,4 @@ The prototype should model:
 
 ## Notes
 
-This ADR is intentionally broad enough to support the prototype phase. If the sync model or collaboration rules change later, add a follow-up ADR rather than rewriting this one.
+This ADR now reflects the implementation of the current prototype. If the app later moves to WatermelonDB, Groq-backed transcription, or a different offline sync model, add a follow-up ADR rather than silently drifting the docs again.

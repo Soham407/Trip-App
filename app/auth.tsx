@@ -6,6 +6,9 @@ import * as Linking from "expo-linking";
 
 import {
   getLaunchRouteAsync,
+  getPrototypeProfiles,
+  isLocalPrototypeMode,
+  signInWithPrototypeProfile,
   signInWithGoogleOAuth
 } from "@/data/appLaunchService";
 import { supabase } from "@/data/supabaseClient";
@@ -95,6 +98,42 @@ export default function AuthScreen() {
               I already signed in
             </Text>
           </Pressable>
+          {isLocalPrototypeMode() ? (
+            <View className="mt-4 rounded-[24px] border border-zinc-200 bg-[#f7fbf8] p-4">
+              <Text className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                Local prototype sign-in
+              </Text>
+              <Text className="mt-2 text-sm text-zinc-600">
+                Localhost-only test personas for end-to-end UI testing.
+              </Text>
+              <View className="mt-3 gap-2">
+                {getPrototypeProfiles().map((profile) => (
+                  <Pressable
+                    key={profile.email}
+                    disabled={submitting}
+                    onPress={() => {
+                      setSubmitting(true);
+                      setMessage(undefined);
+
+                      try {
+                        signInWithPrototypeProfile(profile);
+                        router.replace("/(tabs)");
+                      } catch (error) {
+                        setMessage(error instanceof Error ? error.message : "Unable to start prototype session.");
+                      } finally {
+                        setSubmitting(false);
+                      }
+                    }}
+                    className="rounded-full bg-white px-5 py-3"
+                  >
+                    <Text className="text-center text-sm font-semibold text-[#07110d]">
+                      Continue as {profile.displayName}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          ) : null}
           {message ? <Text className="mt-3 text-sm text-rose-700">{message}</Text> : null}
         </View>
       </View>

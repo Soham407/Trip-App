@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  buildImportedExpenseDraft,
+  commitImportedExpenseDraft,
   categorizeImportedExpense,
   getCurrentTrip,
   getDashboardSnapshot,
@@ -12,14 +14,16 @@ import {
   subscribeCurrentTripStore,
   uncategorizeImportedExpense
 } from "@/data/currentTripStore";
-import { getTripMembers } from "@/data/tripIdentityStore";
+import { getTripMembers, resetTripIdentityStoreForTests } from "@/data/tripIdentityStore";
 
 describe("shared expense review and failed-log flow", () => {
   beforeEach(() => {
+    resetTripIdentityStoreForTests();
     resetCurrentTripStoreForTests();
   });
 
   afterEach(() => {
+    resetTripIdentityStoreForTests();
     resetCurrentTripStoreForTests();
   });
 
@@ -107,6 +111,40 @@ describe("shared expense review and failed-log flow", () => {
         categorySubcategoryId: "transit"
       })
     ).toThrow(/trip member/i);
+  });
+
+  it("lets a member cross-check a parsed import before committing it", () => {
+    const trip = getCurrentTrip();
+    const actingTripMemberId = getTripMembers(trip.id)[0]?.id;
+
+    if (!actingTripMemberId) {
+      throw new Error("expected seeded trip member");
+    }
+
+    const preview = buildImportedExpenseDraft({
+      source: "email",
+      payload:
+        "HDFC Bank Alert: Card XX19 used at LUSITANIA CAFE on 2026-05-03 09:12 for INR 845.20"
+    });
+
+    expect(preview.status).toBe("ready");
+
+    if (preview.status !== "ready") {
+      throw new Error("expected previewable import");
+    }
+
+    expect(getLedgerEntries().some((entry) => entry.label === "LUSITANIA CAFE")).toBe(false);
+
+    const committed = commitImportedExpenseDraft({
+      draft: preview.draft,
+      actingTripMemberId,
+      categoryParentId: "meals",
+      categorySubcategoryId: "dining"
+    });
+
+    expect(committed.status).toBe("categorized");
+    expect(committed.amount).toBe(845.2);
+    expect(committed.label).toBe("LUSITANIA CAFE");
   });
 
   it("notifies shared subscribers when review queue changes", () => {

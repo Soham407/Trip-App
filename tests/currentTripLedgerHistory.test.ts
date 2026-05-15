@@ -7,18 +7,22 @@ import {
   getLedgerActivityHistory,
   getLedgerEntries,
   hardDeleteLedgerEntry,
+  hydrateCurrentTripStoreFromRemote,
   requestLedgerEntryEditLock,
   resetCurrentTripStoreForTests,
-  softDeleteLedgerEntry
+  softDeleteLedgerEntry,
+  updateManualCashLedgerEntry
 } from "@/data/currentTripStore";
-import { getTripMembers } from "@/data/tripIdentityStore";
+import { getTripMembers, resetTripIdentityStoreForTests } from "@/data/tripIdentityStore";
 
 describe("current-trip ledger history contract", () => {
   beforeEach(() => {
+    resetTripIdentityStoreForTests();
     resetCurrentTripStoreForTests();
   });
 
   afterEach(() => {
+    resetTripIdentityStoreForTests();
     resetCurrentTripStoreForTests();
   });
 
@@ -100,6 +104,41 @@ describe("current-trip ledger history contract", () => {
     expect(afterExpiry.status).toBe("granted");
   });
 
+  it("hydrates remote edit locks so another device can block local edits", () => {
+    const trip = getCurrentTrip();
+    const members = getTripMembers(trip.id);
+    const secondMemberId = members[1]?.id;
+    const targetEntryId = getLedgerEntries()[0]?.id;
+
+    if (!secondMemberId || !targetEntryId) {
+      throw new Error("expected seeded ledger and members");
+    }
+
+    hydrateCurrentTripStoreFromRemote({
+      lists: [],
+      ledgerEntries: getLedgerEntries(),
+      failedLogs: [],
+      ledgerEditLocks: [
+        {
+          id: "remote-lock-1",
+          tripId: trip.id,
+          ledgerEntryId: targetEntryId,
+          actingTripMemberId: secondMemberId,
+          acquiredAt: "2026-05-03T12:00:00Z",
+          expiresAt: "2099-05-03T12:00:30Z"
+        }
+      ]
+    });
+
+    const conflict = requestLedgerEntryEditLock({
+      ledgerEntryId: targetEntryId,
+      actingTripMemberId: members[0]?.id ?? "",
+      nowIso: "2026-05-03T12:00:10Z"
+    });
+
+    expect(conflict.status).toBe("conflict");
+  });
+
   it("soft-deletes by default and allows hard delete only for the primary admin member", () => {
     const trip = getCurrentTrip();
     const members = getTripMembers(trip.id);
@@ -138,5 +177,64 @@ describe("current-trip ledger history contract", () => {
     });
 
     expect(getLedgerEntries().some((entry) => entry.id === manual.id)).toBe(false);
+  });
+
+  it("keeps a hard-deleted entry hidden across remote hydration until cloud delete lands", () => {
+    const trip = getCurrentTrip();
+    const members = getTripMembers(trip.id);
+    const primaryAdminMemberId = members[0]?.id;
+
+    if (!primaryAdminMemberId) {
+      throw new Error("expected seeded members");
+    }
+
+    const manual = addManualCashLedgerEntry({
+      label: "Temple tickets",
+      amount: 20,
+      paidBy: "Soham",
+      actingTripMemberId: primaryAdminMemberId
+    });
+
+    hardDeleteLedgerEntry({
+      ledgerEntryId: manual.id,
+      actingTripMemberId: primaryAdminMemberId
+    });
+
+    hydrateCurrentTripStoreFromRemote({
+      lists: [],
+      ledgerEntries: [manual],
+      failedLogs: []
+    });
+
+    expect(getLedgerEntries().some((entry) => entry.id === manual.id)).toBe(false);
+  });
+
+  it("edits an existing manual cash entry and marks it pending sync again", () => {
+    const trip = getCurrentTrip();
+    const editorMemberId = getTripMembers(trip.id)[0]?.id;
+
+    if (!editorMemberId) {
+      throw new Error("expected seeded member");
+    }
+
+    const manual = addManualCashLedgerEntry({
+      label: "Cafe stop",
+      amount: 12,
+      paidBy: "Soham",
+      actingTripMemberId: editorMemberId
+    });
+
+    const updated = updateManualCashLedgerEntry({
+      ledgerEntryId: manual.id,
+      label: "Cafe and snacks",
+      amount: 18.5,
+      paidBy: "Ava",
+      actingTripMemberId: editorMemberId
+    });
+
+    expect(updated.label).toBe("Cafe and snacks");
+    expect(updated.amount).toBe(18.5);
+    expect(updated.paidBy).toBe("Ava");
+    expect(updated.syncStatus).toBe("pending");
   });
 });

@@ -1,13 +1,26 @@
 import { describe, expect, it } from "vitest";
 
-import { getLedgerEntries } from "@/data/currentTripStore";
+import {
+  addTripCustomCategory,
+  getLedgerEntries,
+  getTripCustomCategories,
+  resetCurrentTripStoreForTests
+} from "@/data/currentTripStore";
+import { resetTripIdentityStoreForTests } from "@/data/tripIdentityStore";
 import {
   TRIP_CATEGORIES,
+  buildTripCategories,
   buildLedgerFeedRows,
   resolveCategoryLabel
 } from "@/components/trip-ui/contracts";
+import { beforeEach } from "vitest";
 
 describe("trip UI contracts", () => {
+  beforeEach(() => {
+    resetTripIdentityStoreForTests();
+    resetCurrentTripStoreForTests();
+  });
+
   it("preserves parent category with optional subcategory model", () => {
     expect(TRIP_CATEGORIES.length).toBeGreaterThan(0);
 
@@ -25,6 +38,18 @@ describe("trip UI contracts", () => {
     expect(resolveCategoryLabel(parentWithChildren.id, parentWithChildren.subcategories[0].id)).toBe(
       `${parentWithChildren.label} / ${parentWithChildren.subcategories[0].label}`
     );
+  });
+
+  it("merges custom categories into the picker and label resolver", () => {
+    const customParent = addTripCustomCategory({ label: "Fuel" });
+    const customChild = addTripCustomCategory({
+      label: "Diesel",
+      parentCategoryId: customParent.id
+    });
+    const categories = buildTripCategories(getTripCustomCategories());
+
+    expect(categories.some((category) => category.id === customParent.id)).toBe(true);
+    expect(resolveCategoryLabel(customParent.id, customChild.id, categories)).toBe("Fuel / Diesel");
   });
 
   it("maps ledger entries into sorted transaction feed rows", () => {

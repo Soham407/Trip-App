@@ -1,17 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  acceptTripInvite,
   authenticateWithProvider,
   createFamilyGroup,
   createTripFromCurrentMembers,
   createTripFromDuplicate,
   createTripFromFamilyGroup,
   getAuthPolicy,
+  getTripAdminMembers,
+  getAllTripIdentities,
   getCurrentTripIdentity,
   getDuplicateTripDraft,
+  getTripMemberByInviteToken,
   getTripMembers,
+  setTripStatus,
   resetTripIdentityStoreForTests
 } from "@/data/tripIdentityStore";
+import { selectTripIdentity, setTripMemberRole } from "@/data/tripIdentityStore";
 
 describe("trip identity and reusable family group flows", () => {
   beforeEach(() => {
@@ -134,5 +140,95 @@ describe("trip identity and reusable family group flows", () => {
     });
 
     expect(getCurrentTripIdentity().id).toBe(latestTrip.id);
+  });
+
+  it("allows switching to an archived trip explicitly", () => {
+    const archivedTrip = getAllTripIdentities().find((trip) => trip.status === "archived");
+
+    if (!archivedTrip) {
+      throw new Error("expected seeded archived trip");
+    }
+
+    selectTripIdentity(archivedTrip.id);
+
+    expect(getCurrentTripIdentity().id).toBe(archivedTrip.id);
+    expect(getCurrentTripIdentity().status).toBe("archived");
+  });
+
+  it("supports trip admins without allowing primary-admin demotion", () => {
+    const trip = getCurrentTripIdentity();
+    const members = getTripMembers(trip.id);
+    const primaryAdmin = members.find((member) => member.role === "primary-admin");
+    const targetMember = members.find((member) => member.role === "member");
+
+    if (!primaryAdmin || !targetMember) {
+      throw new Error("expected seeded roles");
+    }
+
+    const promoted = setTripMemberRole({
+      tripId: trip.id,
+      tripMemberId: targetMember.id,
+      role: "trip-admin",
+      actingTripMemberId: primaryAdmin.id
+    });
+
+    expect(promoted.role).toBe("trip-admin");
+    expect(getTripAdminMembers(trip.id).map((member) => member.id)).toContain(targetMember.id);
+
+    expect(() =>
+      setTripMemberRole({
+        tripId: trip.id,
+        tripMemberId: primaryAdmin.id,
+        role: "member",
+        actingTripMemberId: primaryAdmin.id
+      })
+    ).toThrow(/primary admin/i);
+  });
+
+  it("accepts an invite only for the matching email address", () => {
+    const invite = getTripMemberByInviteToken("invite-seed-2");
+
+    if (!invite) {
+      throw new Error("expected seeded invite");
+    }
+
+    expect(() =>
+      acceptTripInvite({
+        inviteToken: invite.inviteToken,
+        userEmail: "wrong@example.com"
+      })
+    ).toThrow(/invited Google account/i);
+
+    const accepted = acceptTripInvite({
+      inviteToken: invite.inviteToken,
+      userEmail: invite.email
+    });
+
+    expect(accepted.tripMember.inviteStatus).toBe("accepted");
+  });
+
+  it("lets a trip admin archive and restore a trip", () => {
+    const trip = getCurrentTripIdentity();
+    const primaryAdmin = getTripMembers(trip.id).find((member) => member.role === "primary-admin");
+
+    if (!primaryAdmin) {
+      throw new Error("expected seeded primary admin");
+    }
+
+    const archived = setTripStatus({
+      tripId: trip.id,
+      status: "archived",
+      actingTripMemberId: primaryAdmin.id
+    });
+
+    expect(archived.status).toBe("archived");
+
+    const restored = setTripStatus({
+      tripId: trip.id,
+      status: "active",
+      actingTripMemberId: primaryAdmin.id
+    });
+
+    expect(restored.status).toBe("active");
   });
 });

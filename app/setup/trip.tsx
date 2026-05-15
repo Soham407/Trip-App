@@ -5,12 +5,14 @@ import { Pressable, Text, TextInput, View } from "react-native";
 import { createInitialTrip } from "@/data/appLaunchService";
 import { hydrateStoresFromSupabase } from "@/data/cloudBootstrap";
 import { getAuthenticatedUser, getFamilyGroups } from "@/data/tripIdentityStore";
+import { TripChip } from "@/components/trip-ui";
 
 export default function TripSetupScreen() {
   const [hydrated, setHydrated] = useState(false);
   const [destination, setDestination] = useState("");
   const [startsOn, setStartsOn] = useState("");
   const [endsOn, setEndsOn] = useState("");
+  const [selectedFamilyGroupId, setSelectedFamilyGroupId] = useState<string>();
   const [message, setMessage] = useState<string>();
 
   useEffect(() => {
@@ -20,7 +22,9 @@ export default function TripSetupScreen() {
   }, []);
 
   const user = getAuthenticatedUser();
-  const familyGroup = hydrated ? getFamilyGroups()[0] : undefined;
+  const familyGroups = hydrated ? getFamilyGroups() : [];
+  const familyGroup =
+    familyGroups.find((group) => group.id === selectedFamilyGroupId) ?? familyGroups[0];
 
   return (
     <View className="w-full max-w-[430px] flex-1 self-center bg-[#eef4f1] px-5 py-8">
@@ -30,6 +34,23 @@ export default function TripSetupScreen() {
           <Text className="mt-2 text-sm leading-5 text-zinc-600">
             Create a real trip workspace backed by Supabase.
           </Text>
+          {familyGroups.length ? (
+            <View className="mt-5">
+              <Text className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                Reusable family group
+              </Text>
+              <View className="flex-row flex-wrap gap-2">
+                {familyGroups.map((group) => (
+                  <TripChip
+                    key={group.id}
+                    label={group.name}
+                    selected={(selectedFamilyGroupId ?? familyGroups[0]?.id) === group.id}
+                    onPress={() => setSelectedFamilyGroupId(group.id)}
+                  />
+                ))}
+              </View>
+            </View>
+          ) : null}
           <TextInput
             value={destination}
             onChangeText={setDestination}

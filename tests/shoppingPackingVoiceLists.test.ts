@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { createTripFromCurrentMembers, resetTripIdentityStoreForTests } from "@/data/tripIdentityStore";
+import { createTripFromCurrentMembers, getTripMembers, resetTripIdentityStoreForTests } from "@/data/tripIdentityStore";
 import {
   NO_NETWORK_VOICE_DICTATION_MESSAGE,
   buildVoiceDictationReview,
   commitVoiceDictationReview,
+  deleteTripListItem,
+  getCurrentTrip,
+  getLedgerActivityHistory,
+  hydrateCurrentTripStoreFromRemote,
   getListSuggestions,
   getShoppingLists,
   getTripListsByKind,
@@ -75,6 +79,18 @@ describe("shopping and packing lists with voice dictation", () => {
 
     expect(commitResult.addedCount).toBe(2);
     expect(afterCount - beforeCount).toBe(2);
+
+    const actingTripMemberId = getTripMembers(getCurrentTrip().id)[0]?.id;
+
+    if (!actingTripMemberId) {
+      throw new Error("expected seeded trip member");
+    }
+
+    expect(
+      getLedgerActivityHistory({ actingTripMemberId }).some((activity) =>
+        activity.message.includes('Added shopping item "milk"')
+      )
+    ).toBe(true);
   });
 
   it("toggles shopping and packing checklist items", () => {
@@ -91,9 +107,57 @@ describe("shopping and packing lists with voice dictation", () => {
 
     expect(toggled.checked).toBe(!shoppingItem.checked);
     expect(refreshedItem?.checked).toBe(!shoppingItem.checked);
+    expect(
+      getLedgerActivityHistory({ actingTripMemberId: getTripMembers(getCurrentTrip().id)[0]?.id ?? "" }).some(
+        (activity) => activity.message.includes(shoppingItem.label)
+      )
+    ).toBe(true);
     expect(() => toggleTripListItem({ kind: "packing", itemId: shoppingItem.id })).toThrow(
       /list item not found/i
     );
+  });
+
+  it("deletes a committed list item", () => {
+    const shoppingItem = getTripListsByKind("shopping")[0]?.items[0];
+
+    if (!shoppingItem) {
+      throw new Error("expected seeded shopping item");
+    }
+
+    deleteTripListItem({ kind: "shopping", itemId: shoppingItem.id });
+
+    expect(
+      getTripListsByKind("shopping")[0]?.items.some((item) => item.id === shoppingItem.id)
+    ).toBe(false);
+    expect(
+      getLedgerActivityHistory({ actingTripMemberId: getTripMembers(getCurrentTrip().id)[0]?.id ?? "" }).some(
+        (activity) => activity.message.includes(`Deleted shopping item "${shoppingItem.label}"`)
+      )
+    ).toBe(true);
+  });
+
+  it("keeps a locally deleted list item hidden across remote hydration until cloud delete lands", () => {
+    const shoppingList = getTripListsByKind("shopping")[0];
+    const shoppingItem = shoppingList?.items[0];
+
+    if (!shoppingList || !shoppingItem) {
+      throw new Error("expected seeded shopping item");
+    }
+
+    deleteTripListItem({ kind: "shopping", itemId: shoppingItem.id });
+
+    hydrateCurrentTripStoreFromRemote({
+      lists: [
+        {
+          ...shoppingList,
+          items: [...shoppingList.items]
+        }
+      ],
+      ledgerEntries: [],
+      failedLogs: []
+    });
+
+    expect(getTripListsByKind("shopping")[0]?.items.some((item) => item.id === shoppingItem.id)).toBe(false);
   });
 
   it("learns autocomplete suggestions from family history across trips", () => {

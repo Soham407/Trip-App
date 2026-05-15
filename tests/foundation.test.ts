@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { TAB_ROUTES } from "@/navigation/tabs";
 import {
   getDataLayerRuntime,
@@ -12,9 +12,15 @@ import {
   getPackingLists,
   resetCurrentTripStoreForTests
 } from "@/data/currentTripStore";
+import { resetTripIdentityStoreForTests } from "@/data/tripIdentityStore";
 import { getLocalDataScaffold } from "@/data/localDataScaffold";
 
 describe("foundation contracts", () => {
+  beforeEach(() => {
+    resetTripIdentityStoreForTests();
+    resetCurrentTripStoreForTests();
+  });
+
   it("defines the three primary tabs", () => {
     expect(TAB_ROUTES.map((route) => route.name)).toEqual([
       "Dashboard",
@@ -49,14 +55,14 @@ describe("foundation contracts", () => {
       "trip_members",
       "family_groups",
       "family_group_members",
-      "packing_lists",
+      "trip_lists",
       "ledger_entries"
     ]);
-    expect(scaffold.syncMode).toBe("local-first-sync-ready");
-    expect(scaffold.notes.storageAdapter).toBe("watermelondb");
+    expect(scaffold.syncMode).toBe("prototype-local-store-sync-ready");
+    expect(scaffold.notes.storageAdapter).toBe("repository-store-prototype");
     expect(scaffold.notes.syncProvider).toBe("supabase");
     expect(getDataLayerRuntime()).toMatchObject({
-      localAdapter: "watermelondb",
+      localAdapter: "repository-store-prototype",
       remoteAdapter: "supabase",
       authProvider: "google-oauth-only",
       editLockTtlSeconds: 30
@@ -69,6 +75,7 @@ describe("foundation contracts", () => {
     expect(readRepositoryState("current-trip", () => ({ marker: "seed" }))).toEqual({
       marker: "saved"
     });
+    resetTripIdentityStoreForTests();
     resetCurrentTripStoreForTests();
   });
 });
