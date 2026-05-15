@@ -5,14 +5,14 @@ export type LocalDataScaffold = {
     "trip_members",
     "family_groups",
     "family_group_members",
-    "packing_lists",
+    "trip_lists",
     "ledger_entries"
   ];
-  syncMode: "local-first-sync-ready";
+  syncMode: "prototype-local-store-sync-ready";
   notes: {
-    storageAdapter: "watermelondb";
+    storageAdapter: "repository-store-prototype";
     syncProvider: "supabase";
-    activeTripScope: "most-recent-active-trip";
+    activeTripScope: "selected-trip";
     membershipAccess: "invite-only";
     authProvider: "google-oauth-only";
   };
@@ -25,14 +25,14 @@ const LOCAL_DATA_SCAFFOLD: LocalDataScaffold = {
     "trip_members",
     "family_groups",
     "family_group_members",
-    "packing_lists",
+    "trip_lists",
     "ledger_entries"
   ],
-  syncMode: "local-first-sync-ready",
+  syncMode: "prototype-local-store-sync-ready",
   notes: {
-    storageAdapter: "watermelondb",
+    storageAdapter: "repository-store-prototype",
     syncProvider: "supabase",
-    activeTripScope: "most-recent-active-trip",
+    activeTripScope: "selected-trip",
     membershipAccess: "invite-only",
     authProvider: "google-oauth-only"
   }

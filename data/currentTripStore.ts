@@ -1,8 +1,10 @@
 import {
   getAllTripIdentities,
   getCurrentTripIdentity,
+  getCurrentUserTripMember,
   getPrimaryAdminTripMember,
-  getTripMembers
+  getTripMembers,
+  subscribeTripIdentityStore
 } from "@/data/tripIdentityStore";
 import {
   readRepositoryState,
@@ -51,6 +53,14 @@ export type TripList = {
   readonly syncStatus?: SyncStatus;
 };
 
+export type TripCustomCategory = {
+  readonly id: string;
+  readonly tripId: string;
+  readonly label: string;
+  readonly parentCategoryId?: string;
+  readonly syncStatus: SyncStatus;
+};
+
 export type ShoppingList = TripList & {
   readonly kind: "shopping";
 };
@@ -87,9 +97,13 @@ export type LedgerEntry = {
 
 export type LedgerActivityType =
   | "manual-cash-entry-added"
+  | "manual-cash-entry-updated"
   | "manual-entry-sync-confirmed"
   | "imported-entry-categorized"
   | "imported-entry-uncategorized"
+  | "list-item-added"
+  | "list-item-toggled"
+  | "list-item-deleted"
   | "soft-delete"
   | "hard-delete";
 
@@ -112,6 +126,14 @@ export type AddManualCashLedgerEntryInput = {
 
 export type ConfirmManualLedgerEntrySyncInput = {
   readonly ledgerEntryId: string;
+  readonly actingTripMemberId: string;
+};
+
+export type UpdateManualCashLedgerEntryInput = {
+  readonly ledgerEntryId: string;
+  readonly label: string;
+  readonly amount: number;
+  readonly paidBy: string;
   readonly actingTripMemberId: string;
 };
 
@@ -191,6 +213,15 @@ export type VoiceDictationReview = {
   readonly candidates: readonly VoiceDictationReviewCandidate[];
 };
 
+export type ImportedExpenseDraft = {
+  readonly id: string;
+  readonly tripId: string;
+  readonly label: string;
+  readonly amount: number;
+  readonly createdAt: string;
+  readonly source: "email" | "webhook";
+};
+
 const INITIAL_LISTS_BY_TRIP: Record<string, readonly TripList[]> = {
   "trip-active-001": [
     {
@@ -255,10 +286,13 @@ type CurrentTripStoreState = {
   listItemSequence: number;
   voiceCandidateSequence: number;
   listsByTrip: Record<string, TripList[]>;
+  customCategoriesByTrip: Record<string, TripCustomCategory[]>;
   ledgerEntriesByTrip: Record<string, LedgerEntry[]>;
   failedLogsByTrip: Record<string, FailedExpenseIngestionLog[]>;
   ledgerActivityByTrip: Record<string, LedgerActivity[]>;
   ledgerEditLocksByTrip: Record<string, LedgerEditLock[]>;
+  pendingDeletedListItemIds: string[];
+  pendingHardDeletedLedgerEntryIds: string[];
 };
 
 function cloneListItem(item: TripListItem): TripListItem {
@@ -282,6 +316,10 @@ function cloneLedgerEntry(entry: LedgerEntry): LedgerEntry {
   return { ...entry };
 }
 
+function cloneTripCustomCategory(category: TripCustomCategory): TripCustomCategory {
+  return { ...category };
+}
+
 function cloneFailedLog(log: FailedExpenseIngestionLog): FailedExpenseIngestionLog {
   return { ...log };
 }
@@ -290,13 +328,35 @@ function cloneLedgerActivity(activity: LedgerActivity): LedgerActivity {
   return { ...activity };
 }
 
+function cloneLedgerEditLock(lock: LedgerEditLock): LedgerEditLock {
+  return { ...lock };
+}
+
 function buildInitialState(): CurrentTripStoreState {
   return {
     sequence: 300,
     timestampCursor: 15,
     listItemSequence: 300,
     voiceCandidateSequence: 400,
+    listsByTrip: {},
+    customCategoriesByTrip: {},
+    ledgerEntriesByTrip: {},
+    failedLogsByTrip: {},
+    ledgerActivityByTrip: {},
+    ledgerEditLocksByTrip: {},
+    pendingDeletedListItemIds: [],
+    pendingHardDeletedLedgerEntryIds: []
+  };
+}
+
+function buildSeedTestState(): CurrentTripStoreState {
+  return {
+    sequence: 300,
+    timestampCursor: 15,
+    listItemSequence: 300,
+    voiceCandidateSequence: 400,
     listsByTrip: cloneListsByTrip(INITIAL_LISTS_BY_TRIP),
+    customCategoriesByTrip: {},
     ledgerEntriesByTrip: {
       "trip-active-001": [
         {
@@ -335,15 +395,26 @@ function buildInitialState(): CurrentTripStoreState {
     },
     ledgerEditLocksByTrip: {
       "trip-active-001": []
-    }
+    },
+    pendingDeletedListItemIds: [],
+    pendingHardDeletedLedgerEntryIds: []
   };
 }
 
 let state: CurrentTripStoreState = readRepositoryState("current-trip", buildInitialState);
+normalizeStateShape();
 
 const listeners = new Set<() => void>();
 
+function normalizeStateShape(): void {
+  state.customCategoriesByTrip ??= {};
+  state.ledgerEditLocksByTrip ??= {};
+  state.pendingDeletedListItemIds ??= [];
+  state.pendingHardDeletedLedgerEntryIds ??= [];
+}
+
 function notifySubscribers(): void {
+  normalizeStateShape();
   writeRepositoryState("current-trip", state);
   listeners.forEach((listener) => listener());
 }
@@ -411,6 +482,7 @@ function ensureTripLists(tripId: string): TripList[] {
   ];
 
   state.listsByTrip[tripId] = seeded;
+  seeded.forEach((list) => persistTripListToCloud(list));
   writeRepositoryState("current-trip", state);
   return seeded;
 }
@@ -432,6 +504,27 @@ function getPrimaryAdminTripMemberId(tripId: string): string {
   }
 
   return primaryAdmin.id;
+}
+
+function resolveActingTripMemberId(tripId: string, actingTripMemberId?: string): string {
+  if (actingTripMemberId) {
+    assertTripMember(tripId, actingTripMemberId);
+    return actingTripMemberId;
+  }
+
+  const currentUserTripMemberId = getCurrentUserTripMember(tripId)?.id;
+
+  if (currentUserTripMemberId) {
+    return currentUserTripMemberId;
+  }
+
+  const fallbackTripMemberId = getTripMembers(tripId)[0]?.id;
+
+  if (fallbackTripMemberId) {
+    return fallbackTripMemberId;
+  }
+
+  throw new Error(`No trip member available for trip ${tripId}`);
 }
 
 function findLedgerEntryIndex(tripId: string, ledgerEntryId: string): number {
@@ -465,6 +558,56 @@ function appendLedgerActivity(activity: Omit<LedgerActivity, "id" | "createdAt">
   };
 
   state.ledgerActivityByTrip[activity.tripId] = [...tripActivities, nextActivity];
+  persistLedgerActivityToCloud(nextActivity);
+}
+
+function clearPendingDeletedListItem(itemId: string): void {
+  state.pendingDeletedListItemIds = state.pendingDeletedListItemIds.filter((candidate) => candidate !== itemId);
+}
+
+function clearPendingHardDeletedLedgerEntry(ledgerEntryId: string): void {
+  state.pendingHardDeletedLedgerEntryIds = state.pendingHardDeletedLedgerEntryIds.filter(
+    (candidate) => candidate !== ledgerEntryId
+  );
+}
+
+function updateTripListItemSyncStatus(itemId: string, syncStatus: SyncStatus): void {
+  Object.values(state.listsByTrip).forEach((lists) => {
+    lists.forEach((list, listIndex) => {
+      if (!list.items.some((item) => item.id === itemId)) {
+        return;
+      }
+
+      lists[listIndex] = {
+        ...list,
+        items: list.items.map((item) => (item.id === itemId ? { ...item, syncStatus } : item))
+      };
+    });
+  });
+}
+
+function updateTripCategorySyncStatus(categoryId: string, syncStatus: SyncStatus): void {
+  Object.keys(state.customCategoriesByTrip).forEach((tripId) => {
+    state.customCategoriesByTrip[tripId] = (state.customCategoriesByTrip[tripId] ?? []).map((category) =>
+      category.id === categoryId ? { ...category, syncStatus } : category
+    );
+  });
+}
+
+function updateLedgerEntrySyncStatus(ledgerEntryId: string, syncStatus: LedgerEntrySyncStatus): void {
+  Object.keys(state.ledgerEntriesByTrip).forEach((tripId) => {
+    state.ledgerEntriesByTrip[tripId] = (state.ledgerEntriesByTrip[tripId] ?? []).map((entry) =>
+      entry.id === ledgerEntryId ? { ...entry, syncStatus } : entry
+    );
+  });
+}
+
+function updateFailedLogSyncStatus(logId: string, syncStatus: SyncStatus): void {
+  Object.keys(state.failedLogsByTrip).forEach((tripId) => {
+    state.failedLogsByTrip[tripId] = (state.failedLogsByTrip[tripId] ?? []).map((log) =>
+      log.id === logId ? { ...log, syncStatus } : log
+    );
+  });
 }
 
 function normalizeItemLabel(value: string): string {
@@ -525,26 +668,41 @@ function getFamilyHistoryTripIdsForCurrentTrip(): Set<string> {
 }
 
 export function resetCurrentTripStoreForTests(): void {
-  state = resetRepositoryState("current-trip", buildInitialState());
+  state = resetRepositoryState("current-trip", buildSeedTestState());
   notifySubscribers();
 }
 
 export function hydrateCurrentTripStoreFromRemote(input: {
   readonly lists: readonly TripList[];
+  readonly tripCategories?: readonly TripCustomCategory[];
   readonly ledgerEntries: readonly LedgerEntry[];
   readonly failedLogs: readonly FailedExpenseIngestionLog[];
   readonly ledgerActivities?: readonly LedgerActivity[];
+  readonly ledgerEditLocks?: readonly LedgerEditLock[];
 }): void {
   const listsByTrip: Record<string, TripList[]> = {};
+  const customCategoriesByTrip: Record<string, TripCustomCategory[]> = {};
   const ledgerEntriesByTrip: Record<string, LedgerEntry[]> = {};
   const failedLogsByTrip: Record<string, FailedExpenseIngestionLog[]> = {};
   const ledgerActivityByTrip: Record<string, LedgerActivity[]> = {};
+  const ledgerEditLocksByTrip: Record<string, LedgerEditLock[]> = {};
 
   input.lists.forEach((list) => {
     listsByTrip[list.tripId] = [...(listsByTrip[list.tripId] ?? []), cloneTripList(list)];
   });
 
+  input.tripCategories?.forEach((category) => {
+    customCategoriesByTrip[category.tripId] = [
+      ...(customCategoriesByTrip[category.tripId] ?? []),
+      cloneTripCustomCategory(category)
+    ];
+  });
+
   input.ledgerEntries.forEach((entry) => {
+    if (state.pendingHardDeletedLedgerEntryIds.includes(entry.id)) {
+      return;
+    }
+
     ledgerEntriesByTrip[entry.tripId] = [
       ...(ledgerEntriesByTrip[entry.tripId] ?? []),
       cloneLedgerEntry(entry)
@@ -559,6 +717,13 @@ export function hydrateCurrentTripStoreFromRemote(input: {
     ledgerActivityByTrip[activity.tripId] = [
       ...(ledgerActivityByTrip[activity.tripId] ?? []),
       cloneLedgerActivity(activity)
+    ];
+  });
+
+  input.ledgerEditLocks?.forEach((lock) => {
+    ledgerEditLocksByTrip[lock.tripId] = [
+      ...(ledgerEditLocksByTrip[lock.tripId] ?? []),
+      cloneLedgerEditLock(lock)
     ];
   });
 
@@ -595,6 +760,23 @@ export function hydrateCurrentTripStoreFromRemote(input: {
     });
   });
 
+  Object.entries(listsByTrip).forEach(([tripId, remoteLists]) => {
+    listsByTrip[tripId] = remoteLists.map((remoteList) => ({
+      ...remoteList,
+      items: remoteList.items.filter((item) => !state.pendingDeletedListItemIds.includes(item.id))
+    }));
+  });
+
+  const orphanedCategories: TripCustomCategory[] = [];
+  Object.entries(state.customCategoriesByTrip).forEach(([tripId, localCategories]) => {
+    const remoteIds = new Set((customCategoriesByTrip[tripId] ?? []).map((category) => category.id));
+    const orphans = localCategories.filter((category) => !remoteIds.has(category.id));
+    if (orphans.length) {
+      customCategoriesByTrip[tripId] = [...(customCategoriesByTrip[tripId] ?? []), ...orphans];
+      orphanedCategories.push(...orphans);
+    }
+  });
+
   const orphanedFailedLogs: FailedExpenseIngestionLog[] = [];
   Object.entries(state.failedLogsByTrip).forEach(([tripId, localLogs]) => {
     const remoteIds = new Set((failedLogsByTrip[tripId] ?? []).map((log) => log.id));
@@ -611,10 +793,13 @@ export function hydrateCurrentTripStoreFromRemote(input: {
     listItemSequence: 1000,
     voiceCandidateSequence: 1000,
     listsByTrip,
+    customCategoriesByTrip,
     ledgerEntriesByTrip,
     failedLogsByTrip,
     ledgerActivityByTrip,
-    ledgerEditLocksByTrip: {}
+    ledgerEditLocksByTrip,
+    pendingDeletedListItemIds: [...state.pendingDeletedListItemIds],
+    pendingHardDeletedLedgerEntryIds: [...state.pendingHardDeletedLedgerEntryIds]
   };
   notifySubscribers();
 
@@ -623,7 +808,10 @@ export function hydrateCurrentTripStoreFromRemote(input: {
   // hydration will pick it up again.
   orphanedLedgerEntries.forEach(persistLedgerEntryToCloud);
   orphanedListItems.forEach(({ listId, item }) => persistListItemToCloud(listId, item));
+  orphanedCategories.forEach(persistTripCategoryToCloud);
   orphanedFailedLogs.forEach(persistFailedLogToCloud);
+  state.pendingDeletedListItemIds.forEach(deleteListItemFromCloud);
+  state.pendingHardDeletedLedgerEntryIds.forEach(deleteLedgerEntryFromCloud);
 }
 
 function persistListItemToCloud(listId: string, item: TripListItem): void {
@@ -639,7 +827,36 @@ function persistListItemToCloud(listId: string, item: TripListItem): void {
     .then(({ error }) => {
       if (error) {
         console.error("Supabase list item sync failed", error.message);
+        updateTripListItemSyncStatus(item.id, "pending");
+        notifySubscribers();
+        return;
       }
+
+      updateTripListItemSyncStatus(item.id, "synced");
+      notifySubscribers();
+    });
+}
+
+function persistTripCategoryToCloud(category: TripCustomCategory): void {
+  void supabase
+    .from("trip_categories")
+    .upsert({
+      id: category.id,
+      trip_id: category.tripId,
+      label: category.label,
+      parent_category_id: category.parentCategoryId ?? null,
+      sync_status: category.syncStatus
+    })
+    .then(({ error }) => {
+      if (error) {
+        console.error("Supabase trip category sync failed", error.message);
+        updateTripCategorySyncStatus(category.id, "pending");
+        notifySubscribers();
+        return;
+      }
+
+      updateTripCategorySyncStatus(category.id, "synced");
+      notifySubscribers();
     });
 }
 
@@ -666,7 +883,13 @@ function persistLedgerEntryToCloud(entry: LedgerEntry): void {
     .then(({ error }) => {
       if (error) {
         console.error("Supabase ledger sync failed", error.message);
+        updateLedgerEntrySyncStatus(entry.id, "pending");
+        notifySubscribers();
+        return;
       }
+
+      updateLedgerEntrySyncStatus(entry.id, "synced");
+      notifySubscribers();
     });
 }
 
@@ -685,16 +908,158 @@ function persistFailedLogToCloud(log: FailedExpenseIngestionLog): void {
     .then(({ error }) => {
       if (error) {
         console.error("Supabase failed import sync failed", error.message);
+        updateFailedLogSyncStatus(log.id, "pending");
+        notifySubscribers();
+        return;
       }
+
+      updateFailedLogSyncStatus(log.id, "synced");
+      notifySubscribers();
+    });
+}
+
+function persistLedgerActivityToCloud(activity: LedgerActivity): void {
+  void supabase
+    .from("ledger_activities")
+    .upsert({
+      id: activity.id,
+      trip_id: activity.tripId,
+      ledger_entry_id: activity.ledgerEntryId ?? null,
+      acting_trip_member_id: activity.actingTripMemberId,
+      type: activity.type,
+      message: activity.message,
+      created_at: activity.createdAt
+    })
+    .then(({ error }) => {
+      if (error) {
+        console.error("Supabase ledger activity sync failed", error.message);
+      }
+    });
+}
+
+function persistLedgerEditLockToCloud(lock: LedgerEditLock): void {
+  void supabase
+    .from("ledger_edit_locks")
+    .upsert({
+      id: lock.id,
+      trip_id: lock.tripId,
+      ledger_entry_id: lock.ledgerEntryId,
+      acting_trip_member_id: lock.actingTripMemberId,
+      acquired_at: lock.acquiredAt,
+      expires_at: lock.expiresAt
+    })
+    .then(({ error }) => {
+      if (error) {
+        console.error("Supabase ledger lock sync failed", error.message);
+      }
+    });
+}
+
+function deleteLedgerEditLockFromCloud(lockId: string): void {
+  void supabase
+    .from("ledger_edit_locks")
+    .delete()
+    .eq("id", lockId)
+    .then(({ error }) => {
+      if (error) {
+        console.error("Supabase ledger lock delete failed", error.message);
+      }
+    });
+}
+
+function persistTripListToCloud(list: TripList): void {
+  void supabase
+    .from("trip_lists")
+    .upsert({
+      id: list.id,
+      trip_id: list.tripId,
+      kind: list.kind,
+      title: list.title,
+      sync_status: list.syncStatus ?? "pending"
+    })
+    .then(({ error }) => {
+      if (error) {
+        console.error("Supabase trip list sync failed", error.message);
+      }
+    });
+}
+
+function deleteListItemFromCloud(itemId: string): void {
+  void supabase
+    .from("trip_list_items")
+    .delete()
+    .eq("id", itemId)
+    .then(({ error }) => {
+      if (error) {
+        console.error("Supabase list item delete failed", error.message);
+        return;
+      }
+
+      clearPendingDeletedListItem(itemId);
+      notifySubscribers();
+    });
+}
+
+function deleteLedgerEntryFromCloud(ledgerEntryId: string): void {
+  void supabase
+    .from("ledger_entries")
+    .delete()
+    .eq("id", ledgerEntryId)
+    .then(({ error }) => {
+      if (error) {
+        console.error("Supabase ledger delete failed", error.message);
+        return;
+      }
+
+      clearPendingHardDeletedLedgerEntry(ledgerEntryId);
+      notifySubscribers();
     });
 }
 
 export function subscribeCurrentTripStore(listener: () => void): () => void {
   listeners.add(listener);
+  const unsubscribeTripIdentity = subscribeTripIdentityStore(listener);
 
   return () => {
     listeners.delete(listener);
+    unsubscribeTripIdentity();
   };
+}
+
+export function retryPendingCloudSync(): void {
+  Object.values(state.listsByTrip).forEach((lists) => {
+    lists.forEach((list) => {
+      persistTripListToCloud(list);
+      list.items
+        .filter((item) => item.syncStatus !== "synced")
+        .forEach((item) => persistListItemToCloud(list.id, item));
+    });
+  });
+
+  Object.values(state.customCategoriesByTrip).forEach((categories) => {
+    categories
+      .filter((category) => category.syncStatus !== "synced")
+      .forEach(persistTripCategoryToCloud);
+  });
+
+  Object.values(state.ledgerEntriesByTrip).forEach((entries) => {
+    entries
+      .filter((entry) => entry.syncStatus !== "synced")
+      .forEach(persistLedgerEntryToCloud);
+  });
+
+  Object.values(state.failedLogsByTrip).forEach((logs) => {
+    logs
+      .filter((log) => log.syncStatus !== "synced")
+      .forEach(persistFailedLogToCloud);
+  });
+
+  state.pendingDeletedListItemIds.forEach(deleteListItemFromCloud);
+  state.pendingHardDeletedLedgerEntryIds.forEach(deleteLedgerEntryFromCloud);
+}
+
+export function ensureTripWorkspace(tripId: string): void {
+  ensureTripLists(tripId).forEach((list) => persistTripListToCloud(list));
 }
 
 export function getCurrentTrip(): CurrentTrip {
@@ -717,6 +1082,46 @@ export function getTripListsByKind(kind: TripListKind): readonly TripList[] {
   return ensureTripLists(tripId)
     .filter((list) => list.kind === kind)
     .map(cloneTripList);
+}
+
+export function getTripCustomCategories(): readonly TripCustomCategory[] {
+  const tripId = getCurrentTrip().id;
+  return [...(state.customCategoriesByTrip[tripId] ?? [])].map(cloneTripCustomCategory);
+}
+
+export function addTripCustomCategory(input: {
+  readonly label: string;
+  readonly parentCategoryId?: string;
+}): TripCustomCategory {
+  const tripId = getCurrentTrip().id;
+  const label = input.label.trim();
+
+  if (!label) {
+    throw new Error("Custom category requires a label");
+  }
+
+  const existing = (state.customCategoriesByTrip[tripId] ?? []).find(
+    (category) =>
+      category.parentCategoryId === input.parentCategoryId &&
+      category.label.trim().toLowerCase() === label.toLowerCase()
+  );
+
+  if (existing) {
+    return cloneTripCustomCategory(existing);
+  }
+
+  const category: TripCustomCategory = {
+    id: nextId("trip-category"),
+    tripId,
+    label,
+    parentCategoryId: input.parentCategoryId,
+    syncStatus: "pending"
+  };
+
+  state.customCategoriesByTrip[tripId] = [...(state.customCategoriesByTrip[tripId] ?? []), category];
+  persistTripCategoryToCloud(category);
+  notifySubscribers();
+  return cloneTripCustomCategory(category);
 }
 
 export function getShoppingLists(): readonly ShoppingList[] {
@@ -778,10 +1183,12 @@ export function removeVoiceDictationReviewItem(input: {
 }
 
 export function commitVoiceDictationReview(
-  review: VoiceDictationReview
+  review: VoiceDictationReview,
+  actingTripMemberId?: string
 ): { readonly listId: string; readonly addedCount: number } {
   const tripLists = ensureTripLists(review.tripId);
   const targetList = tripLists.find((list) => list.kind === review.kind);
+  const resolvedActingTripMemberId = resolveActingTripMemberId(review.tripId, actingTripMemberId);
 
   if (!targetList) {
     throw new Error(`List kind not found for trip: ${review.kind}`);
@@ -790,7 +1197,8 @@ export function commitVoiceDictationReview(
   const nextItems = review.candidates.map((candidate) => ({
     id: nextListItemId(),
     label: candidate.label,
-    checked: false
+    checked: false,
+    syncStatus: "pending" as const
   }));
 
   const updatedList: TripList = {
@@ -802,6 +1210,14 @@ export function commitVoiceDictationReview(
     list.id === targetList.id ? updatedList : list
   );
 
+  nextItems.forEach((item) => {
+    appendLedgerActivity({
+      tripId: review.tripId,
+      actingTripMemberId: resolvedActingTripMemberId,
+      type: "list-item-added",
+      message: `Added ${review.kind} item "${item.label}".`
+    });
+  });
   nextItems.forEach((item) => persistListItemToCloud(targetList.id, item));
   notifySubscribers();
 
@@ -811,12 +1227,55 @@ export function commitVoiceDictationReview(
   };
 }
 
+export function deleteTripListItem(input: {
+  readonly kind: TripListKind;
+  readonly itemId: string;
+  readonly actingTripMemberId?: string;
+}): void {
+  const tripId = getCurrentTrip().id;
+  const tripLists = ensureTripLists(tripId);
+  const resolvedActingTripMemberId = resolveActingTripMemberId(tripId, input.actingTripMemberId);
+  const targetList = tripLists.find((list) =>
+    list.kind === input.kind && list.items.some((item) => item.id === input.itemId)
+  );
+
+  if (!targetList) {
+    throw new Error(`List item not found: ${input.itemId}`);
+  }
+
+  state.listsByTrip[tripId] = tripLists.map((list) =>
+    list.id === targetList.id
+      ? {
+          ...targetList,
+          items: targetList.items.filter((item) => item.id !== input.itemId)
+        }
+      : list
+  );
+
+  if (!state.pendingDeletedListItemIds.includes(input.itemId)) {
+    state.pendingDeletedListItemIds.push(input.itemId);
+  }
+  const deletedItem = targetList.items.find((item) => item.id === input.itemId);
+  if (deletedItem) {
+    appendLedgerActivity({
+      tripId,
+      actingTripMemberId: resolvedActingTripMemberId,
+      type: "list-item-deleted",
+      message: `Deleted ${input.kind} item "${deletedItem.label}".`
+    });
+  }
+  deleteListItemFromCloud(input.itemId);
+  notifySubscribers();
+}
+
 export function toggleTripListItem(input: {
   readonly kind: TripListKind;
   readonly itemId: string;
+  readonly actingTripMemberId?: string;
 }): TripListItem {
   const tripId = getCurrentTrip().id;
   const tripLists = ensureTripLists(tripId);
+  const resolvedActingTripMemberId = resolveActingTripMemberId(tripId, input.actingTripMemberId);
   const targetList = tripLists.find((list) =>
     list.kind === input.kind && list.items.some((item) => item.id === input.itemId)
   );
@@ -833,7 +1292,7 @@ export function toggleTripListItem(input: {
         return item;
       }
 
-      toggledItem = { ...item, checked: !item.checked };
+      toggledItem = { ...item, checked: !item.checked, syncStatus: "pending" };
       return toggledItem;
     })
   };
@@ -843,6 +1302,12 @@ export function toggleTripListItem(input: {
   );
 
   if (toggledItem) {
+    appendLedgerActivity({
+      tripId,
+      actingTripMemberId: resolvedActingTripMemberId,
+      type: "list-item-toggled",
+      message: `${toggledItem.checked ? "Checked" : "Unchecked"} ${input.kind} item "${toggledItem.label}".`
+    });
     persistListItemToCloud(targetList.id, toggledItem);
   }
   notifySubscribers();
@@ -948,6 +1413,7 @@ export function requestLedgerEntryEditLock(
     updatedLock
   ];
 
+  persistLedgerEditLockToCloud(updatedLock);
   notifySubscribers();
 
   return {
@@ -977,6 +1443,7 @@ export function confirmLedgerEntryEditLock(input: ConfirmLedgerEntryEditLockInpu
   }
 
   state.ledgerEditLocksByTrip[tripId] = tripLocks.filter((lock) => lock.id !== input.lockId);
+  deleteLedgerEditLockFromCloud(input.lockId);
   notifySubscribers();
 }
 
@@ -1064,6 +1531,65 @@ export function confirmManualLedgerEntrySync(input: ConfirmManualLedgerEntrySync
   return cloneLedgerEntry(syncedEntry);
 }
 
+export function updateManualCashLedgerEntry(input: UpdateManualCashLedgerEntryInput): LedgerEntry {
+  const tripId = getActiveTripId();
+  assertTripMember(tripId, input.actingTripMemberId);
+
+  const label = input.label.trim();
+  const paidBy = input.paidBy.trim();
+
+  if (!label) {
+    throw new Error("Manual cash entry requires a label");
+  }
+
+  if (!paidBy) {
+    throw new Error("Manual cash entry requires who paid");
+  }
+
+  if (!Number.isFinite(input.amount) || input.amount <= 0) {
+    throw new Error("Manual cash entry requires a positive amount");
+  }
+
+  const entries = state.ledgerEntriesByTrip[tripId] ?? [];
+  const expenseIndex = entries.findIndex((entry) => entry.id === input.ledgerEntryId);
+
+  if (expenseIndex < 0) {
+    throw new Error(`Ledger entry not found: ${input.ledgerEntryId}`);
+  }
+
+  const target = entries[expenseIndex];
+
+  if (!target || target.source !== "manual" || !target.isCash) {
+    throw new Error(`Manual cash entry not found: ${input.ledgerEntryId}`);
+  }
+
+  if (target.deletedAt) {
+    throw new Error("Deleted entries cannot be edited");
+  }
+
+  const updated: LedgerEntry = {
+    ...target,
+    label,
+    amount: input.amount,
+    paidBy,
+    syncStatus: "pending",
+    updatedByTripMemberId: input.actingTripMemberId
+  };
+
+  entries[expenseIndex] = updated;
+  appendLedgerActivity({
+    tripId,
+    ledgerEntryId: updated.id,
+    actingTripMemberId: input.actingTripMemberId,
+    type: "manual-cash-entry-updated",
+    message: `Updated manual cash entry "${updated.label}".`
+  });
+  persistLedgerEntryToCloud(updated);
+  notifySubscribers();
+
+  return cloneLedgerEntry(updated);
+}
+
 export function softDeleteLedgerEntry(input: SoftDeleteLedgerEntryInput): LedgerEntry {
   const tripId = getActiveTripId();
   assertTripMember(tripId, input.actingTripMemberId);
@@ -1087,6 +1613,7 @@ export function softDeleteLedgerEntry(input: SoftDeleteLedgerEntryInput): Ledger
 
   const deleted: LedgerEntry = {
     ...target,
+    syncStatus: "pending",
     deletedAt: nextTimestamp(),
     deletedByTripMemberId: input.actingTripMemberId,
     updatedByTripMemberId: input.actingTripMemberId
@@ -1131,6 +1658,9 @@ export function hardDeleteLedgerEntry(input: HardDeleteLedgerEntryInput): void {
   state.ledgerEditLocksByTrip[tripId] = ensureLedgerEditLocks(tripId).filter(
     (lock) => lock.ledgerEntryId !== input.ledgerEntryId
   );
+  if (!state.pendingHardDeletedLedgerEntryIds.includes(input.ledgerEntryId)) {
+    state.pendingHardDeletedLedgerEntryIds.push(input.ledgerEntryId);
+  }
   appendLedgerActivity({
     tripId,
     ledgerEntryId: input.ledgerEntryId,
@@ -1138,6 +1668,7 @@ export function hardDeleteLedgerEntry(input: HardDeleteLedgerEntryInput): void {
     type: "hard-delete",
     message: `Hard deleted ledger entry "${removedEntry.label}".`
   });
+  deleteLedgerEntryFromCloud(input.ledgerEntryId);
   notifySubscribers();
 }
 
@@ -1185,10 +1716,78 @@ export function ingestSharedExpenseAlert(input: IngestSharedExpenseAlertInput): 
     createdAt: parsed.timestamp,
     status: "imported-uncategorized",
     source: input.source,
-    syncStatus: "synced"
+    syncStatus: "pending"
   };
 
   state.ledgerEntriesByTrip[tripId] = [...(state.ledgerEntriesByTrip[tripId] ?? []), importedExpense];
+  persistLedgerEntryToCloud(importedExpense);
+  notifySubscribers();
+
+  return cloneLedgerEntry(importedExpense);
+}
+
+export function buildImportedExpenseDraft(input: IngestSharedExpenseAlertInput):
+  | { readonly status: "failed"; readonly message: string }
+  | { readonly status: "ready"; readonly draft: ImportedExpenseDraft } {
+  const tripId = getActiveTripId();
+  const parsed = parseImportedExpensePayload(input.payload);
+
+  if (isParseFailure(parsed)) {
+    return {
+      status: "failed",
+      message: parsed.error
+    };
+  }
+
+  return {
+    status: "ready",
+    draft: {
+      id: nextId("draft-import"),
+      tripId,
+      label: parsed.merchant,
+      amount: parsed.amount,
+      createdAt: parsed.timestamp,
+      source: input.source
+    }
+  };
+}
+
+export function commitImportedExpenseDraft(input: {
+  readonly draft: ImportedExpenseDraft;
+  readonly actingTripMemberId: string;
+  readonly categoryParentId?: string;
+  readonly categorySubcategoryId?: string;
+}): LedgerEntry {
+  const tripId = getActiveTripId();
+  assertTripMember(tripId, input.actingTripMemberId);
+
+  const importedExpense: LedgerEntry = {
+    id: nextId("entry-import"),
+    tripId,
+    label: input.draft.label,
+    amount: input.draft.amount,
+    paidBy: "Imported alert",
+    createdAt: input.draft.createdAt,
+    categoryParentId: input.categoryParentId,
+    categorySubcategoryId: input.categorySubcategoryId,
+    status: input.categoryParentId ? "categorized" : "imported-uncategorized",
+    source: input.draft.source,
+    syncStatus: "pending",
+    updatedByTripMemberId: input.actingTripMemberId
+  };
+
+  state.ledgerEntriesByTrip[tripId] = [...(state.ledgerEntriesByTrip[tripId] ?? []), importedExpense];
+
+  if (input.categoryParentId) {
+    appendLedgerActivity({
+      tripId,
+      ledgerEntryId: importedExpense.id,
+      actingTripMemberId: input.actingTripMemberId,
+      type: "imported-entry-categorized",
+      message: `Imported and categorized entry "${importedExpense.label}".`
+    });
+  }
+
   persistLedgerEntryToCloud(importedExpense);
   notifySubscribers();
 
@@ -1217,6 +1816,7 @@ export function categorizeImportedExpense(input: CategorizeImportedExpenseInput)
     categoryParentId: input.categoryParentId,
     categorySubcategoryId: input.categorySubcategoryId,
     status: "categorized",
+    syncStatus: "pending",
     updatedByTripMemberId: input.actingTripMemberId
   };
 
@@ -1256,6 +1856,7 @@ export function uncategorizeImportedExpense(input: UncategorizedImportedExpenseI
     categoryParentId: undefined,
     categorySubcategoryId: undefined,
     status: "imported-uncategorized",
+    syncStatus: "pending",
     updatedByTripMemberId: input.actingTripMemberId
   };
 

@@ -8,9 +8,9 @@ export type LocalFirstEntity = {
 
 export type DataLayerRuntime = {
   readonly authProvider: "google-oauth-only";
-  readonly localAdapter: "watermelondb";
+  readonly localAdapter: "repository-store-prototype";
   readonly remoteAdapter: "supabase";
-  readonly activeTripScope: "most-recent-active-trip";
+  readonly activeTripScope: "selected-trip";
   readonly membershipAccess: "invite-only";
   readonly editLockTtlSeconds: 30;
 };
@@ -41,9 +41,9 @@ function getStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | und
 export function getDataLayerRuntime(): DataLayerRuntime {
   return {
     authProvider: "google-oauth-only",
-    localAdapter: "watermelondb",
+    localAdapter: "repository-store-prototype",
     remoteAdapter: "supabase",
-    activeTripScope: "most-recent-active-trip",
+    activeTripScope: "selected-trip",
     membershipAccess: "invite-only",
     editLockTtlSeconds: 30
   };
