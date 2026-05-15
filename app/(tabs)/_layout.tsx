@@ -7,7 +7,8 @@ import { AppState, Text, View } from "react-native";
 import { TAB_ROUTES } from "@/navigation/tabs";
 import { getLaunchRouteAsync } from "@/data/appLaunchService";
 import { hydrateStoresFromSupabase, subscribeToCurrentTripRealtime } from "@/data/cloudBootstrap";
-import { getCurrentTripIdentity } from "@/data/tripIdentityStore";
+import { retryPendingCloudSync } from "@/data/currentTripStore";
+import { getCurrentTripIdentity, subscribeTripIdentityStore } from "@/data/tripIdentityStore";
 
 function TabBarIcon(props: {
   name: ComponentProps<typeof FontAwesome6>["name"];
@@ -18,6 +19,14 @@ function TabBarIcon(props: {
 
 export default function TabLayout() {
   const [ready, setReady] = useState(false);
+  const [tripIdentityRevision, setTripIdentityRevision] = useState(0);
+  const currentTripId = tripIdentityRevision >= 0 ? (() => {
+    try {
+      return getCurrentTripIdentity().id;
+    } catch {
+      return undefined;
+    }
+  })() : undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -45,29 +54,36 @@ export default function TabLayout() {
   }, []);
 
   useEffect(() => {
+    return subscribeTripIdentityStore(() => setTripIdentityRevision((value) => value + 1));
+  }, []);
+
+  useEffect(() => {
     if (!ready) {
       return;
     }
 
     let unsubscribe: (() => void) | undefined;
 
-    try {
-      unsubscribe = subscribeToCurrentTripRealtime(getCurrentTripIdentity().id);
-    } catch {
-      // No active trip yet — realtime is a no-op until one exists.
+    if (currentTripId) {
+      unsubscribe = subscribeToCurrentTripRealtime(currentTripId);
     }
 
     const appStateSub = AppState.addEventListener("change", (status) => {
       if (status === "active") {
         void hydrateStoresFromSupabase().catch(() => {});
+        retryPendingCloudSync();
       }
     });
+    const retryInterval = setInterval(() => {
+      retryPendingCloudSync();
+    }, 30_000);
 
     return () => {
       unsubscribe?.();
       appStateSub.remove();
+      clearInterval(retryInterval);
     };
-  }, [ready]);
+  }, [currentTripId, ready]);
 
   if (!ready) {
     return (

@@ -1,4 +1,4 @@
-import type { LedgerEntry } from "@/data/currentTripStore";
+import type { LedgerEntry, TripCustomCategory } from "@/data/currentTripStore";
 
 export type TripSubcategory = {
   readonly id: string;
@@ -52,12 +52,74 @@ export const TRIP_CATEGORIES: readonly TripCategory[] = [
   }
 ];
 
-export function resolveCategoryLabel(parentId?: string, subcategoryId?: string): string {
+function cloneCategory(category: TripCategory): TripCategory {
+  return {
+    ...category,
+    subcategories: category.subcategories ? [...category.subcategories] : undefined
+  };
+}
+
+export function buildTripCategories(
+  customCategories: readonly TripCustomCategory[] = []
+): readonly TripCategory[] {
+  const categories = TRIP_CATEGORIES.map(cloneCategory);
+  const categoryIndex = new Map<string, TripCategory>(categories.map((category) => [category.id, category]));
+
+  function replaceCategory(nextCategory: TripCategory): void {
+    const index = categories.findIndex((category) => category.id === nextCategory.id);
+
+    if (index >= 0) {
+      categories[index] = nextCategory;
+    } else {
+      categories.push(nextCategory);
+    }
+
+    categoryIndex.set(nextCategory.id, nextCategory);
+  }
+
+  customCategories
+    .filter((category) => !category.parentCategoryId)
+    .forEach((category) => {
+      const nextCategory: TripCategory = {
+        id: category.id,
+        label: category.label
+      };
+      replaceCategory(nextCategory);
+    });
+
+  customCategories
+    .filter((category) => !!category.parentCategoryId)
+    .forEach((category) => {
+      const parent = categoryIndex.get(category.parentCategoryId ?? "");
+
+      if (!parent) {
+        return;
+      }
+
+      const nextSubcategory = {
+        id: category.id,
+        label: category.label
+      };
+
+      replaceCategory({
+        ...parent,
+        subcategories: [...(parent.subcategories ?? []), nextSubcategory]
+      });
+    });
+
+  return categories;
+}
+
+export function resolveCategoryLabel(
+  parentId?: string,
+  subcategoryId?: string,
+  categories: readonly TripCategory[] = TRIP_CATEGORIES
+): string {
   if (!parentId) {
     return "Uncategorized";
   }
 
-  const parent = TRIP_CATEGORIES.find((category) => category.id === parentId);
+  const parent = categories.find((category) => category.id === parentId);
 
   if (!parent) {
     return "Uncategorized";
@@ -76,12 +138,15 @@ export function resolveCategoryLabel(parentId?: string, subcategoryId?: string):
   return `${parent.label} / ${subcategory.label}`;
 }
 
-export function getSubcategoriesForParent(parentId?: string): readonly TripSubcategory[] {
+export function getSubcategoriesForParent(
+  parentId?: string,
+  categories: readonly TripCategory[] = TRIP_CATEGORIES
+): readonly TripSubcategory[] {
   if (!parentId) {
     return [];
   }
 
-  const parent = TRIP_CATEGORIES.find((category) => category.id === parentId);
+  const parent = categories.find((category) => category.id === parentId);
 
   return parent?.subcategories ?? [];
 }
@@ -112,7 +177,8 @@ function amountPrefix(entry: LedgerEntry): string {
 
 export function buildLedgerFeedRows(
   entries: readonly LedgerEntry[],
-  currency: string
+  currency: string,
+  categories: readonly TripCategory[] = TRIP_CATEGORIES
 ): readonly LedgerFeedRow[] {
   return [...entries]
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
@@ -138,7 +204,7 @@ export function buildLedgerFeedRows(
         meta: metaParts.join(" • "),
         categoryLabel: entry.deletedAt
           ? "Deleted"
-          : resolveCategoryLabel(entry.categoryParentId, entry.categorySubcategoryId),
+          : resolveCategoryLabel(entry.categoryParentId, entry.categorySubcategoryId, categories),
         createdAt: entry.createdAt
       };
     });

@@ -1,12 +1,15 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import FontAwesome6 from "@expo/vector-icons/FontAwesome6";
 
 import {
   buildVoiceDictationReview,
   commitVoiceDictationReview,
+  deleteTripListItem,
   getListSuggestions,
   getTripListsByKind,
   removeVoiceDictationReviewItem,
+  subscribeCurrentTripStore,
   toggleTripListItem,
   type TripListKind,
   type VoiceDictationReview
@@ -19,14 +22,30 @@ const LIST_TABS: readonly { readonly kind: TripListKind; readonly label: string 
 ];
 
 export default function ListsScreen() {
+  const [storeRevision, setStoreRevision] = useState(0);
+  useEffect(() => subscribeCurrentTripStore(() => setStoreRevision((value) => value + 1)), []);
+
   const [activeTab, setActiveTab] = useState<TripListKind>("shopping");
   const [draftText, setDraftText] = useState("");
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [review, setReview] = useState<VoiceDictationReview | undefined>();
-  const [refreshToken, setRefreshToken] = useState(0);
+  const [dictating, setDictating] = useState(false);
+  const recognizerRef = useRef<{
+    start: () => void;
+    stop: () => void;
+    onresult?: (event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void;
+    onerror?: () => void;
+    onend?: () => void;
+    continuous?: boolean;
+    interimResults?: boolean;
+    lang?: string;
+  } | null>(null);
 
-  const lists = useMemo(() => getTripListsByKind(activeTab), [activeTab, refreshToken]);
-  const suggestions = useMemo(() => getListSuggestions(activeTab, draftText).slice(0, 8), [activeTab, draftText, refreshToken]);
+  const lists = useMemo(() => getTripListsByKind(activeTab), [activeTab, storeRevision]);
+  const suggestions = useMemo(
+    () => getListSuggestions(activeTab, draftText).slice(0, 8),
+    [activeTab, draftText, storeRevision]
+  );
 
   const openReviewFromDraft = () => {
     const result = buildVoiceDictationReview({
@@ -57,6 +76,79 @@ export default function ListsScreen() {
 
     setDraftText(`${draftText}${nextSeparator}${label}`);
   };
+
+  useEffect(() => {
+    return () => {
+      recognizerRef.current?.stop();
+    };
+  }, []);
+
+  function toggleVoiceDictation() {
+    if (dictating) {
+      recognizerRef.current?.stop();
+      setDictating(false);
+      return;
+    }
+
+    if (typeof window === "undefined") {
+      setStatusMessage("Voice dictation is currently available in the web build.");
+      return;
+    }
+
+    const SpeechRecognitionCtor =
+      (globalThis as typeof globalThis & {
+        SpeechRecognition?: new () => typeof recognizerRef.current;
+        webkitSpeechRecognition?: new () => typeof recognizerRef.current;
+      }).SpeechRecognition ??
+      (globalThis as typeof globalThis & {
+        SpeechRecognition?: new () => typeof recognizerRef.current;
+        webkitSpeechRecognition?: new () => typeof recognizerRef.current;
+      }).webkitSpeechRecognition;
+
+    if (!SpeechRecognitionCtor) {
+      setStatusMessage("This browser does not support microphone dictation.");
+      return;
+    }
+
+    const recognizer = new SpeechRecognitionCtor();
+
+    if (!recognizer) {
+      setStatusMessage("This browser does not support microphone dictation.");
+      return;
+    }
+
+    recognizer.continuous = false;
+    recognizer.interimResults = false;
+    recognizer.lang = "en-IN";
+    recognizer.onresult = (event) => {
+      const transcript = Array.from(event.results)
+        .map((result) => result[0]?.transcript ?? "")
+        .join(", ")
+        .trim();
+
+      if (!transcript) {
+        return;
+      }
+
+      setDraftText((current) => {
+        const trimmed = current.trim();
+        return trimmed ? `${trimmed}, ${transcript}` : transcript;
+      });
+      setStatusMessage("Voice dictation added to the draft. Review before saving.");
+    };
+    recognizer.onerror = () => {
+      setStatusMessage("Voice dictation failed. Try again or type the items instead.");
+      setDictating(false);
+    };
+    recognizer.onend = () => {
+      setDictating(false);
+    };
+
+    recognizerRef.current = recognizer;
+    setStatusMessage("Listening for list items...");
+    setDictating(true);
+    recognizer.start();
+  }
 
   return (
     <TripScreenShell title="Trip Lists" subtitle="Shopping and packing for this trip">
@@ -105,6 +197,14 @@ export default function ListsScreen() {
                 Review and add
               </Text>
             </Pressable>
+            <Pressable
+              onPress={toggleVoiceDictation}
+              className={dictating ? "rounded-full bg-[#123f33] px-5 py-3" : "rounded-full bg-white px-5 py-3"}
+            >
+              <Text className={dictating ? "text-sm font-semibold text-white" : "text-sm font-semibold text-[#07110d]"}>
+                {dictating ? "Stop dictation" : "Start dictation"}
+              </Text>
+            </Pressable>
           </View>
 
           {statusMessage ? <Text className="mt-2 text-xs text-zinc-500">{statusMessage}</Text> : null}
@@ -132,15 +232,24 @@ export default function ListsScreen() {
               </View>
               <View className="mt-3 flex-row flex-wrap gap-2">
                 {list.items.map((item) => (
-                  <TripChip
+                  <View
                     key={item.id}
-                    label={item.label}
-                    selected={item.checked}
-                    onPress={() => {
-                      toggleTripListItem({ kind: activeTab, itemId: item.id });
-                      setRefreshToken((token) => token + 1);
-                    }}
-                  />
+                    className="flex-row items-center gap-2 rounded-full bg-[#eef4f1] pr-2"
+                  >
+                    <TripChip
+                      label={item.label}
+                      selected={item.checked}
+                      onPress={() => {
+                        toggleTripListItem({ kind: activeTab, itemId: item.id });
+                      }}
+                    />
+                    <Pressable
+                      onPress={() => deleteTripListItem({ kind: activeTab, itemId: item.id })}
+                      className="h-8 w-8 items-center justify-center rounded-full bg-white"
+                    >
+                      <FontAwesome6 name="xmark" size={12} color="#7f1d1d" />
+                    </Pressable>
+                  </View>
                 ))}
               </View>
             </TripCard>
@@ -190,7 +299,6 @@ export default function ListsScreen() {
             commitVoiceDictationReview(review);
             setReview(undefined);
             setDraftText("");
-            setRefreshToken((token) => token + 1);
           }}
           className="self-start rounded-full border border-teal-700 bg-teal-600 px-4 py-2"
         >

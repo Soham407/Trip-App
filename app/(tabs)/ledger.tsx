@@ -3,31 +3,44 @@ import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import FontAwesome6 from "@expo/vector-icons/FontAwesome6";
 
 import {
+  addTripCustomCategory,
   addManualCashLedgerEntry,
+  buildImportedExpenseDraft,
+  commitImportedExpenseDraft,
   categorizeImportedExpense,
   confirmLedgerEntryEditLock,
-  confirmManualLedgerEntrySync,
   getCurrentTrip,
   getFailedExpenseIngestionLog,
   getLedgerActivityHistory,
   getLedgerEntries,
   getNeedsReviewExpenses,
+  getTripCustomCategories,
+  hardDeleteLedgerEntry,
   ingestSharedExpenseAlert,
   requestLedgerEntryEditLock,
+  retryPendingCloudSync,
+  softDeleteLedgerEntry,
   subscribeCurrentTripStore,
+  type ImportedExpenseDraft,
+  updateManualCashLedgerEntry,
   uncategorizeImportedExpense
 } from "@/data/currentTripStore";
-import { getCurrentUserTripMember, getTripMembers } from "@/data/tripIdentityStore";
+import {
+  getCurrentUserTripMember,
+  getPrimaryAdminTripMember,
+  getTripMembers
+} from "@/data/tripIdentityStore";
 import {
   TripCategorySheet,
   TripChip,
-  TripExpenseReviewSheet,
-  TripFeedRow,
-  TripScreenShell,
-  buildLedgerFeedRows,
-  formatTripCurrency,
-  resolveCategoryLabel
-} from "@/components/trip-ui";
+    TripExpenseReviewSheet,
+    TripFeedRow,
+    TripScreenShell,
+    buildLedgerFeedRows,
+    buildTripCategories,
+    formatTripCurrency,
+    resolveCategoryLabel
+  } from "@/components/trip-ui";
 
 export default function LedgerScreen() {
   const [, setStoreRevision] = useState(0);
@@ -39,13 +52,17 @@ export default function LedgerScreen() {
   const tripMemberId = currentTripMember?.id;
   const entries = getLedgerEntries();
   const failedLog = getFailedExpenseIngestionLog();
-  const needsReviewRows = buildLedgerFeedRows(getNeedsReviewExpenses(), trip.currency);
+  const categories = buildTripCategories(getTripCustomCategories());
+  const needsReviewRows = buildLedgerFeedRows(getNeedsReviewExpenses(), trip.currency, categories);
   const activityHistory = tripMemberId ? getLedgerActivityHistory({ actingTripMemberId: tripMemberId }) : [];
 
   const [manualLabel, setManualLabel] = useState("");
   const [manualAmount, setManualAmount] = useState("");
   const [manualPaidBy, setManualPaidBy] = useState(currentTripMember?.displayName ?? tripMembers[0]?.displayName ?? "");
+  const [editingManualEntryId, setEditingManualEntryId] = useState<string>();
+  const [editingManualEntryLockId, setEditingManualEntryLockId] = useState<string>();
   const [importPayload, setImportPayload] = useState("");
+  const [importDraft, setImportDraft] = useState<ImportedExpenseDraft>();
   const [entryMessage, setEntryMessage] = useState<string>();
   const [importMessage, setImportMessage] = useState<string>();
   const [lockPrompt, setLockPrompt] = useState<string>();
@@ -91,9 +108,22 @@ export default function LedgerScreen() {
     });
   }, [entries, focusedQueue, searchQuery, selectedParentId, selectedSubcategoryId]);
 
-  const rows = buildLedgerFeedRows(filteredEntries, trip.currency);
+  const rows = buildLedgerFeedRows(filteredEntries, trip.currency, categories);
   const selectedReviewExpense = entries.find((entry) => entry.id === reviewSheetExpenseId);
-  const selectedLabel = resolveCategoryLabel(selectedParentId, selectedSubcategoryId);
+  const draftReviewExpense = importDraft ? {
+    id: importDraft.id,
+    tripId: importDraft.tripId,
+    label: importDraft.label,
+    amount: importDraft.amount,
+    paidBy: "Imported alert",
+    createdAt: importDraft.createdAt,
+    status: "imported-uncategorized" as const,
+    source: importDraft.source,
+    syncStatus: "pending" as const
+  } : undefined;
+  const editingManualEntry = entries.find((entry) => entry.id === editingManualEntryId);
+  const selectedLabel = resolveCategoryLabel(selectedParentId, selectedSubcategoryId, categories);
+  const primaryAdminMemberId = getPrimaryAdminTripMember(trip.id)?.id;
   const pendingManualCashEntries = entries.filter(
     (entry) => entry.source === "manual" && entry.isCash && entry.syncStatus === "pending"
   );
@@ -118,6 +148,24 @@ export default function LedgerScreen() {
 
     setLockPrompt(undefined);
     return lock.lockId;
+  }
+
+  useEffect(() => {
+    if (!editingManualEntry) {
+      return;
+    }
+
+    setManualLabel(editingManualEntry.label);
+    setManualAmount(String(editingManualEntry.amount));
+    setManualPaidBy(editingManualEntry.paidBy);
+  }, [editingManualEntry]);
+
+  function resetManualForm() {
+    setEditingManualEntryId(undefined);
+    setEditingManualEntryLockId(undefined);
+    setManualLabel("");
+    setManualAmount("");
+    setManualPaidBy(currentTripMember?.displayName ?? tripMembers[0]?.displayName ?? "");
   }
 
   return (
@@ -157,7 +205,9 @@ export default function LedgerScreen() {
 
         <View className="rounded-[28px] bg-white/95 p-4 shadow-sm">
           <View className="flex-row items-center justify-between">
-            <Text className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Manual cash entry</Text>
+            <Text className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+              {editingManualEntryId ? "Edit manual cash entry" : "Manual cash entry"}
+            </Text>
             <View className="rounded-full bg-[#caff68] px-3 py-1">
               <Text className="text-xs font-semibold text-[#07110d]">Pending sync</Text>
             </View>
@@ -197,15 +247,31 @@ export default function LedgerScreen() {
               const amount = Number.parseFloat(manualAmount);
 
               try {
-                addManualCashLedgerEntry({
-                  label: manualLabel,
-                  amount,
-                  paidBy: manualPaidBy,
-                  actingTripMemberId: tripMemberId
-                });
-                setManualLabel("");
-                setManualAmount("");
-                setEntryMessage("Cash entry saved as pending sync.");
+                if (editingManualEntryId && editingManualEntryLockId) {
+                  updateManualCashLedgerEntry({
+                    ledgerEntryId: editingManualEntryId,
+                    label: manualLabel,
+                    amount,
+                    paidBy: manualPaidBy,
+                    actingTripMemberId: tripMemberId
+                  });
+                  confirmLedgerEntryEditLock({
+                    ledgerEntryId: editingManualEntryId,
+                    actingTripMemberId: tripMemberId,
+                    lockId: editingManualEntryLockId
+                  });
+                  resetManualForm();
+                  setEntryMessage("Manual cash entry updated.");
+                } else {
+                  addManualCashLedgerEntry({
+                    label: manualLabel,
+                    amount,
+                    paidBy: manualPaidBy,
+                    actingTripMemberId: tripMemberId
+                  });
+                  resetManualForm();
+                  setEntryMessage("Cash entry saved as pending sync.");
+                }
               } catch (error) {
                 setEntryMessage(error instanceof Error ? error.message : "Unable to add manual cash entry.");
               }
@@ -213,9 +279,26 @@ export default function LedgerScreen() {
             className="mt-3 rounded-full bg-[#caff68] px-4 py-3"
           >
             <Text className="text-center text-sm font-semibold text-[#07110d]">
-              Add cash entry
+              {editingManualEntryId ? "Save changes" : "Add cash entry"}
             </Text>
           </Pressable>
+          {editingManualEntryId ? (
+            <Pressable
+              onPress={() => {
+                if (editingManualEntryId && editingManualEntryLockId && tripMemberId) {
+                  confirmLedgerEntryEditLock({
+                    ledgerEntryId: editingManualEntryId,
+                    actingTripMemberId: tripMemberId,
+                    lockId: editingManualEntryLockId
+                  });
+                }
+                resetManualForm();
+              }}
+              className="mt-2 rounded-full border border-zinc-200 bg-white px-4 py-3"
+            >
+              <Text className="text-center text-sm font-semibold text-[#07110d]">Cancel edit</Text>
+            </Pressable>
+          ) : null}
           {!!entryMessage && <Text className="mt-2 text-xs text-zinc-600">{entryMessage}</Text>}
         </View>
 
@@ -241,20 +324,33 @@ export default function LedgerScreen() {
                   return;
                 }
 
-                const imported = ingestSharedExpenseAlert({
+                const preview = buildImportedExpenseDraft({
                   source: "email",
                   payload: importPayload
                 });
 
-                setImportMessage(imported ? "Imported alert added to needs review." : "Alert moved to failed imports.");
+                if (preview.status === "failed") {
+                  const imported = ingestSharedExpenseAlert({
+                    source: "email",
+                    payload: importPayload
+                  });
+
+                  setImportDraft(undefined);
+                  setImportMessage(imported ? "Imported alert added to needs review." : "Alert moved to failed imports.");
+                  return;
+                }
+
+                setImportDraft(preview.draft);
+                setImportMessage("Review the locked import details before committing the expense.");
               }}
               className="rounded-full bg-[#caff68] px-4 py-3"
             >
-              <Text className="text-sm font-semibold text-[#07110d]">Import alert</Text>
+              <Text className="text-sm font-semibold text-[#07110d]">Review import</Text>
             </Pressable>
             <Pressable
               onPress={() => {
                 setImportPayload("");
+                setImportDraft(undefined);
                 setImportMessage(undefined);
               }}
               className="rounded-full border border-zinc-200 bg-white px-4 py-3"
@@ -277,15 +373,12 @@ export default function LedgerScreen() {
                       return;
                     }
 
-                    confirmManualLedgerEntrySync({
-                      ledgerEntryId: entry.id,
-                      actingTripMemberId: tripMemberId
-                    });
-                    setEntryMessage(`Confirmed sync for ${entry.label}.`);
+                    retryPendingCloudSync();
+                    setEntryMessage(`Retried sync for ${entry.label}.`);
                   }}
                   className="rounded-2xl bg-[#eef4f1] px-4 py-3"
                 >
-                  <Text className="text-sm font-semibold text-[#07110d]">Confirm sync: {entry.label}</Text>
+                  <Text className="text-sm font-semibold text-[#07110d]">Retry sync: {entry.label}</Text>
                 </Pressable>
               ))}
             </View>
@@ -323,15 +416,88 @@ export default function LedgerScreen() {
           <Text className="px-1 text-sm font-semibold text-zinc-500">
             Today
           </Text>
-          {rows.map((row) => (
-            <TripFeedRow
-              key={row.id}
-              title={row.title}
-              meta={row.meta}
-              amountLabel={row.amountLabel}
-              categoryLabel={row.categoryLabel}
-            />
-          ))}
+          {filteredEntries.map((entry) => {
+            const row = buildLedgerFeedRows([entry], trip.currency, categories)[0];
+
+            if (!row) {
+              return null;
+            }
+
+            const canEditManual = entry.source === "manual" && entry.isCash && !entry.deletedAt;
+            const canHardDelete = !!entry.deletedAt && tripMemberId === primaryAdminMemberId;
+
+            return (
+              <View key={entry.id} className="gap-2">
+                <TripFeedRow
+                  title={row.title}
+                  meta={row.meta}
+                  amountLabel={row.amountLabel}
+                  categoryLabel={row.categoryLabel}
+                />
+                {canEditManual ? (
+                  <View className="flex-row gap-2 px-2">
+                    <Pressable
+                      onPress={() => {
+                        const lockId = reserveSharedEditLock(entry.id);
+
+                        if (!lockId) {
+                          return;
+                        }
+
+                        setEditingManualEntryId(entry.id);
+                        setEditingManualEntryLockId(lockId);
+                        setEntryMessage(`Editing ${entry.label}.`);
+                      }}
+                      className="rounded-full border border-zinc-200 bg-white px-4 py-2"
+                    >
+                      <Text className="text-xs font-semibold uppercase tracking-wide text-[#07110d]">Edit</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        if (!tripMemberId) {
+                          return;
+                        }
+
+                        softDeleteLedgerEntry({
+                          ledgerEntryId: entry.id,
+                          actingTripMemberId: tripMemberId
+                        });
+                        if (editingManualEntryId === entry.id) {
+                          resetManualForm();
+                        }
+                        setEntryMessage(`Deleted ${entry.label}.`);
+                      }}
+                      className="rounded-full border border-rose-200 bg-rose-50 px-4 py-2"
+                    >
+                      <Text className="text-xs font-semibold uppercase tracking-wide text-rose-700">Delete</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+                {canHardDelete ? (
+                  <View className="px-2">
+                    <Pressable
+                      onPress={() => {
+                        if (!tripMemberId) {
+                          return;
+                        }
+
+                        hardDeleteLedgerEntry({
+                          ledgerEntryId: entry.id,
+                          actingTripMemberId: tripMemberId
+                        });
+                        setEntryMessage(`Permanently removed ${entry.label}.`);
+                      }}
+                      className="self-start rounded-full border border-rose-300 bg-white px-4 py-2"
+                    >
+                      <Text className="text-xs font-semibold uppercase tracking-wide text-rose-700">
+                        Hard delete
+                      </Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+              </View>
+            );
+          })}
         </View>
         ) : null}
 
@@ -372,6 +538,7 @@ export default function LedgerScreen() {
 
       <TripCategorySheet
         visible={categorySheetOpen}
+        categories={categories}
         parentId={selectedParentId}
         subcategoryId={selectedSubcategoryId}
         onClose={() => setCategorySheetOpen(false)}
@@ -380,10 +547,70 @@ export default function LedgerScreen() {
           setSelectedSubcategoryId(subcategoryId);
           setCategorySheetOpen(false);
         }}
+        onCreateCategory={({ label, parentCategoryId }) => {
+          const category = addTripCustomCategory({ label, parentCategoryId });
+          if (parentCategoryId) {
+            setSelectedParentId(parentCategoryId);
+            setSelectedSubcategoryId(category.id);
+          } else {
+            setSelectedParentId(category.id);
+            setSelectedSubcategoryId(undefined);
+          }
+          setCategorySheetOpen(false);
+        }}
+      />
+
+      <TripExpenseReviewSheet
+        visible={!!draftReviewExpense}
+        title="Review imported expense before save"
+        primaryActionLabel="Import categorized"
+        secondaryActionLabel="Add uncategorized"
+        categories={categories}
+        expense={draftReviewExpense}
+        onClose={() => setImportDraft(undefined)}
+        onCategorize={({ categoryParentId, categorySubcategoryId }) => {
+          if (!importDraft || !tripMemberId) {
+            return;
+          }
+
+          commitImportedExpenseDraft({
+            draft: importDraft,
+            actingTripMemberId: tripMemberId,
+            categoryParentId,
+            categorySubcategoryId
+          });
+          setImportDraft(undefined);
+          setImportPayload("");
+          setImportMessage("Imported alert saved.");
+        }}
+        onUncategorize={() => {
+          if (!importDraft || !tripMemberId) {
+            return;
+          }
+
+          commitImportedExpenseDraft({
+            draft: importDraft,
+            actingTripMemberId: tripMemberId
+          });
+          setImportDraft(undefined);
+          setImportPayload("");
+          setImportMessage("Imported alert added to needs review.");
+        }}
+        onCreateCategory={({ label, parentCategoryId }) => {
+          const category = addTripCustomCategory({ label, parentCategoryId });
+          if (parentCategoryId) {
+            setSelectedParentId(parentCategoryId);
+            setSelectedSubcategoryId(category.id);
+          } else {
+            setSelectedParentId(category.id);
+            setSelectedSubcategoryId(undefined);
+          }
+        }}
       />
 
       <TripExpenseReviewSheet
         visible={!!selectedReviewExpense}
+        categories={categories}
         expense={selectedReviewExpense}
         onClose={() => setReviewSheetExpenseId(undefined)}
         onCategorize={({ categoryParentId, categorySubcategoryId }) => {
@@ -431,6 +658,16 @@ export default function LedgerScreen() {
             lockId
           });
           setReviewSheetExpenseId(undefined);
+        }}
+        onCreateCategory={({ label, parentCategoryId }) => {
+          const category = addTripCustomCategory({ label, parentCategoryId });
+          if (parentCategoryId) {
+            setSelectedParentId(parentCategoryId);
+            setSelectedSubcategoryId(category.id);
+          } else {
+            setSelectedParentId(category.id);
+            setSelectedSubcategoryId(undefined);
+          }
         }}
       />
     </TripScreenShell>
