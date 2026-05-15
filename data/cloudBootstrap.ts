@@ -5,16 +5,26 @@ import {
   type FailedExpenseIngestionLog,
   type LedgerActivity,
   type LedgerEntry,
+  type TripCustomCategory,
   type TripList
 } from "@/data/currentTripStore";
 import { supabase } from "@/data/supabaseClient";
 import {
   hydrateTripIdentityStoreFromRemote,
+  getAuthenticatedUser,
   type FamilyGroup,
   type TripIdentityUser,
   type TripMember,
   type TripRecord
 } from "@/data/tripIdentityStore";
+
+function isLocalPrototypeMode(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return ["localhost", "127.0.0.1"].includes(window.location.hostname);
+}
 
 function appUserFromSupabaseUser(user: User): TripIdentityUser {
   return {
@@ -61,6 +71,10 @@ export async function hydrateStoresFromSupabase(): Promise<void> {
   const sessionUser = await ensureCloudUser();
 
   if (!sessionUser) {
+    if (isLocalPrototypeMode() && getAuthenticatedUser()) {
+      return;
+    }
+
     hydrateTripIdentityStoreFromRemote({
       users: [],
       groups: [],
@@ -81,22 +95,26 @@ export async function hydrateStoresFromSupabase(): Promise<void> {
     groupMembersResult,
     tripsResult,
     tripMembersResult,
+    tripCategoriesResult,
     listsResult,
     listItemsResult,
     ledgerResult,
     activitiesResult,
-    failedLogsResult
+    failedLogsResult,
+    ledgerLocksResult
   ] = await Promise.all([
     supabase.from("app_users").select("id,email,display_name,provider"),
     supabase.from("family_groups").select("id,name,owner_user_id,created_at,sync_status"),
     supabase.from("family_group_members").select("id,family_group_id,display_name,email"),
     supabase.from("trips").select("*").order("created_at", { ascending: true }),
     supabase.from("trip_members").select("*"),
+    supabase.from("trip_categories").select("*"),
     supabase.from("trip_lists").select("*"),
     supabase.from("trip_list_items").select("*"),
     supabase.from("ledger_entries").select("*"),
     supabase.from("ledger_activities").select("*"),
-    supabase.from("failed_expense_ingestion_logs").select("*")
+    supabase.from("failed_expense_ingestion_logs").select("*"),
+    supabase.from("ledger_edit_locks").select("*")
   ]);
 
   if (usersResult.error) console.warn("app_users fetch failed:", usersResult.error.message);
@@ -104,11 +122,13 @@ export async function hydrateStoresFromSupabase(): Promise<void> {
   if (groupMembersResult.error) console.warn("family_group_members fetch failed:", groupMembersResult.error.message);
   if (tripsResult.error) console.warn("trips fetch failed:", tripsResult.error.message);
   if (tripMembersResult.error) console.warn("trip_members fetch failed:", tripMembersResult.error.message);
+  if (tripCategoriesResult.error) console.warn("trip_categories fetch failed:", tripCategoriesResult.error.message);
   if (listsResult.error) console.warn("trip_lists fetch failed:", listsResult.error.message);
   if (listItemsResult.error) console.warn("trip_list_items fetch failed:", listItemsResult.error.message);
   if (ledgerResult.error) console.warn("ledger_entries fetch failed:", ledgerResult.error.message);
   if (activitiesResult.error) console.warn("ledger_activities fetch failed:", activitiesResult.error.message);
   if (failedLogsResult.error) console.warn("failed_expense_ingestion_logs fetch failed:", failedLogsResult.error.message);
+  if (ledgerLocksResult.error) console.warn("ledger_edit_locks fetch failed:", ledgerLocksResult.error.message);
 
   const groupMembersByGroupId = new Map<string, FamilyGroup["members"]>();
   (groupMembersResult.data ?? []).forEach((row) => {
@@ -158,10 +178,19 @@ export async function hydrateStoresFromSupabase(): Promise<void> {
     tripId: String(row.trip_id),
     displayName: String(row.display_name),
     email: String(row.email),
+    role: (row.trip_role ?? "member") as TripMember["role"],
     inviteStatus: row.invite_status as TripMember["inviteStatus"],
     invitedByUserId: row.invited_by_user_id != null ? String(row.invited_by_user_id) : "",
     inviteToken: row.invite_token != null ? String(row.invite_token) : "",
     syncStatus: row.sync_status as TripMember["syncStatus"]
+  }));
+
+  const tripCategories: TripCustomCategory[] = (tripCategoriesResult.data ?? []).map((row) => ({
+    id: String(row.id),
+    tripId: String(row.trip_id),
+    label: String(row.label),
+    parentCategoryId: row.parent_category_id ? String(row.parent_category_id) : undefined,
+    syncStatus: row.sync_status as TripCustomCategory["syncStatus"]
   }));
 
   const itemsByListId = new Map<string, TripList["items"]>();
@@ -225,6 +254,15 @@ export async function hydrateStoresFromSupabase(): Promise<void> {
     syncStatus: row.sync_status as FailedExpenseIngestionLog["syncStatus"]
   }));
 
+  const ledgerEditLocks = (ledgerLocksResult.data ?? []).map((row) => ({
+    id: String(row.id),
+    tripId: String(row.trip_id),
+    ledgerEntryId: String(row.ledger_entry_id),
+    actingTripMemberId: String(row.acting_trip_member_id),
+    acquiredAt: String(row.acquired_at),
+    expiresAt: String(row.expires_at)
+  }));
+
   hydrateTripIdentityStoreFromRemote({
     sessionUser,
     users,
@@ -234,9 +272,11 @@ export async function hydrateStoresFromSupabase(): Promise<void> {
   });
   hydrateCurrentTripStoreFromRemote({
     lists,
+    tripCategories,
     ledgerEntries,
     failedLogs,
-    ledgerActivities
+    ledgerActivities,
+    ledgerEditLocks
   });
 }
 
@@ -246,6 +286,48 @@ export function subscribeToCurrentTripRealtime(tripId: string): () => void {
     .on(
       "postgres_changes",
       { event: "*", schema: "public", table: "ledger_entries", filter: `trip_id=eq.${tripId}` },
+      () => {
+        void hydrateStoresFromSupabase().catch(() => {});
+      }
+    )
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "trips", filter: `id=eq.${tripId}` },
+      () => {
+        void hydrateStoresFromSupabase().catch(() => {});
+      }
+    )
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "trip_members", filter: `trip_id=eq.${tripId}` },
+      () => {
+        void hydrateStoresFromSupabase().catch(() => {});
+      }
+    )
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "ledger_activities", filter: `trip_id=eq.${tripId}` },
+      () => {
+        void hydrateStoresFromSupabase().catch(() => {});
+      }
+    )
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "trip_list_items" },
+      () => {
+        void hydrateStoresFromSupabase().catch(() => {});
+      }
+    )
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "ledger_edit_locks", filter: `trip_id=eq.${tripId}` },
+      () => {
+        void hydrateStoresFromSupabase().catch(() => {});
+      }
+    )
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "trip_categories", filter: `trip_id=eq.${tripId}` },
       () => {
         void hydrateStoresFromSupabase().catch(() => {});
       }

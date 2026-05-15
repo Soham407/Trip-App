@@ -48,15 +48,23 @@ export type TripRecord = {
   readonly syncStatus: SyncStatus;
 };
 
+export type TripMemberRole = "primary-admin" | "trip-admin" | "member";
+
 export type TripMember = {
   readonly id: string;
   readonly tripId: string;
   readonly displayName: string;
   readonly email: string;
+  readonly role: TripMemberRole;
   readonly inviteStatus: "pending" | "accepted";
   readonly invitedByUserId: string;
   readonly inviteToken: string;
   readonly syncStatus: SyncStatus;
+};
+
+export type InviteAcceptanceResult = {
+  readonly tripId: string;
+  readonly tripMember: TripMember;
 };
 
 export type TripFields = {
@@ -93,11 +101,14 @@ type TripIdentityState = {
   sequence: number;
   timestampCursor: number;
   sessionUserId?: string;
+  selectedTripId?: string;
   users: TripIdentityUser[];
   groups: FamilyGroup[];
   trips: TripRecord[];
   tripMembers: TripMember[];
 };
+
+const listeners = new Set<() => void>();
 
 const AUTH_POLICY: AuthPolicy = {
   allowedProviders: ["google"],
@@ -134,7 +145,26 @@ function cloneTripMember(member: TripMember): TripMember {
   return { ...member };
 }
 
+function getUserById(userId: string): TripIdentityUser | undefined {
+  return state.users.find((user) => user.id === userId);
+}
+
+function getTripMemberById(tripId: string, tripMemberId: string): TripMember | undefined {
+  return state.tripMembers.find((member) => member.tripId === tripId && member.id === tripMemberId);
+}
+
 function buildInitialState(): TripIdentityState {
+  return {
+    sequence: 100,
+    timestampCursor: 2,
+    users: [],
+    groups: [],
+    trips: [],
+    tripMembers: []
+  };
+}
+
+function buildSeedTestState(): TripIdentityState {
   const familyGroup: FamilyGroup = {
     id: "family-group-001",
     name: "Primary Family",
@@ -162,24 +192,51 @@ function buildInitialState(): TripIdentityState {
     syncStatus: "synced"
   };
 
+  const archivedTrip: TripRecord = {
+    id: "trip-archive-001",
+    destination: "Jaipur",
+    startsOn: "2025-12-18",
+    endsOn: "2025-12-22",
+    currency: "INR",
+    status: "archived",
+    createdByUserId: INITIAL_OWNER_USER.id,
+    createdAt: "2025-12-18T00:00:02Z",
+    sourceFamilyGroupId: familyGroup.id,
+    syncStatus: "synced"
+  };
+
   const activeTripMembers: TripMember[] = familyGroup.members.map((member, index) => ({
     id: `trip-member-seed-${index + 1}`,
     tripId: activeTrip.id,
     displayName: member.displayName,
     email: sanitizeEmail(member.email),
+    role: index === 0 ? "primary-admin" : "member",
     inviteStatus: "accepted",
     invitedByUserId: INITIAL_OWNER_USER.id,
     inviteToken: `invite-seed-${index + 1}`,
     syncStatus: "synced"
   }));
 
+  const archivedTripMembers: TripMember[] = familyGroup.members.map((member, index) => ({
+    id: `trip-member-archive-${index + 1}`,
+    tripId: archivedTrip.id,
+    displayName: member.displayName,
+    email: sanitizeEmail(member.email),
+    role: index === 0 ? "primary-admin" : "member",
+    inviteStatus: "accepted",
+    invitedByUserId: INITIAL_OWNER_USER.id,
+    inviteToken: `invite-archive-${index + 1}`,
+    syncStatus: "synced"
+  }));
+
   return {
     sequence: 100,
     timestampCursor: 2,
+    selectedTripId: activeTrip.id,
     users: [INITIAL_OWNER_USER],
     groups: [familyGroup],
-    trips: [activeTrip],
-    tripMembers: activeTripMembers
+    trips: [activeTrip, archivedTrip],
+    tripMembers: [...activeTripMembers, ...archivedTripMembers]
   };
 }
 
@@ -187,6 +244,7 @@ let state: TripIdentityState = readRepositoryState("trip-identity", buildInitial
 
 function saveTripIdentityState(): void {
   writeRepositoryState("trip-identity", state);
+  listeners.forEach((listener) => listener());
 }
 
 function nextId(prefix: string): string {
@@ -227,12 +285,20 @@ function createSnapshotMembers(
   invitedByUserId: string,
   members: readonly { readonly displayName: string; readonly email: string }[]
 ): TripMember[] {
+  const inviterEmail = sanitizeEmail(getUserById(invitedByUserId)?.email ?? "");
   const snapshotMembers = members.map((member) => ({
     id: nextId("trip-member"),
     tripId,
     displayName: member.displayName,
     email: sanitizeEmail(member.email),
-    inviteStatus: "pending" as const,
+    role:
+      sanitizeEmail(member.email) === inviterEmail
+        ? ("primary-admin" as const)
+        : ("member" as const),
+    inviteStatus:
+      sanitizeEmail(member.email) === inviterEmail
+        ? ("accepted" as const)
+        : ("pending" as const),
     invitedByUserId,
     inviteToken: buildInviteToken(tripId, member.email),
     syncStatus: "pending" as const
@@ -243,7 +309,8 @@ function createSnapshotMembers(
 }
 
 export function resetTripIdentityStoreForTests(): void {
-  state = resetRepositoryState("trip-identity", buildInitialState());
+  state = resetRepositoryState("trip-identity", buildSeedTestState());
+  listeners.forEach((listener) => listener());
 }
 
 export function hydrateTripIdentityStoreFromRemote(input: {
@@ -253,6 +320,7 @@ export function hydrateTripIdentityStoreFromRemote(input: {
   readonly trips: readonly TripRecord[];
   readonly tripMembers: readonly TripMember[];
 }): void {
+  const previousSelectedTripId = state.selectedTripId;
   const usersById = new Map<string, TripIdentityUser>();
 
   [...input.users, ...(input.sessionUser ? [input.sessionUser] : [])].forEach((user) => {
@@ -263,12 +331,24 @@ export function hydrateTripIdentityStoreFromRemote(input: {
     sequence: 1000,
     timestampCursor: 10,
     sessionUserId: input.sessionUser?.id,
+    selectedTripId:
+      (previousSelectedTripId && input.trips.some((trip) => trip.id === previousSelectedTripId))
+        ? previousSelectedTripId
+        : input.trips.find((trip) => trip.status === "active")?.id ?? input.trips[0]?.id,
     users: [...usersById.values()],
     groups: input.groups.map(cloneGroup),
     trips: input.trips.map(cloneTrip),
     tripMembers: input.tripMembers.map(cloneTripMember)
   };
   saveTripIdentityState();
+}
+
+export function subscribeTripIdentityStore(listener: () => void): () => void {
+  listeners.add(listener);
+
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 export function getAuthPolicy(): AuthPolicy {
@@ -329,6 +409,11 @@ export function removeLocalFamilyGroup(familyGroupId: string): void {
 export function removeLocalTripWithMembers(tripId: string): void {
   state.trips = state.trips.filter((trip) => trip.id !== tripId);
   state.tripMembers = state.tripMembers.filter((member) => member.tripId !== tripId);
+
+  if (state.selectedTripId === tripId) {
+    state.selectedTripId = state.trips.find((trip) => trip.status === "active")?.id ?? state.trips[0]?.id;
+  }
+
   saveTripIdentityState();
 }
 
@@ -360,6 +445,14 @@ export function getFamilyGroups(): readonly FamilyGroup[] {
 }
 
 export function getCurrentTripIdentity(): TripRecord {
+  const selectedTrip = state.selectedTripId
+    ? state.trips.find((trip) => trip.id === state.selectedTripId)
+    : undefined;
+
+  if (selectedTrip) {
+    return cloneTrip(selectedTrip);
+  }
+
   const activeTrips = state.trips.filter((trip) => trip.status === "active");
 
   if (activeTrips.length === 0) {
@@ -377,8 +470,30 @@ export function getAllTripIdentities(): readonly TripRecord[] {
   return state.trips.map(cloneTrip);
 }
 
+export function selectTripIdentity(tripId: string): TripRecord {
+  const target = state.trips.find((trip) => trip.id === tripId);
+
+  if (!target) {
+    throw new Error(`Trip not found: ${tripId}`);
+  }
+
+  state.selectedTripId = target.id;
+  saveTripIdentityState();
+  return cloneTrip(target);
+}
+
+export function getSelectedTripIdentityId(): string | undefined {
+  return state.selectedTripId;
+}
+
 export function getTripMembers(tripId: string): readonly TripMember[] {
   return state.tripMembers.filter((member) => member.tripId === tripId).map(cloneTripMember);
+}
+
+export function getTripAdminMembers(tripId: string): readonly TripMember[] {
+  return getTripMembers(tripId).filter(
+    (member) => member.role === "primary-admin" || member.role === "trip-admin"
+  );
 }
 
 export function getCurrentUserTripMember(tripId: string): TripMember | undefined {
@@ -397,24 +512,145 @@ export function getCurrentUserTripMember(tripId: string): TripMember | undefined
 }
 
 export function getPrimaryAdminTripMember(tripId: string): TripMember | undefined {
-  const trip = state.trips.find((candidate) => candidate.id === tripId);
-
-  if (!trip) {
-    return undefined;
-  }
-
-  const creator = state.users.find((user) => user.id === trip.createdByUserId);
-
-  if (!creator) {
-    return undefined;
-  }
-
-  const creatorEmail = sanitizeEmail(creator.email);
   const match = state.tripMembers.find(
-    (member) => member.tripId === tripId && sanitizeEmail(member.email) === creatorEmail
+    (member) => member.tripId === tripId && member.role === "primary-admin"
+  );
+  return match ? cloneTripMember(match) : undefined;
+}
+
+export function getTripMemberByInviteToken(inviteToken: string): TripMember | undefined {
+  const match = state.tripMembers.find((member) => member.inviteToken === inviteToken);
+  return match ? cloneTripMember(match) : undefined;
+}
+
+export function getPendingTripMembers(tripId: string): readonly TripMember[] {
+  return getTripMembers(tripId).filter((member) => member.inviteStatus === "pending");
+}
+
+export function setTripMemberRole(input: {
+  readonly tripId: string;
+  readonly tripMemberId: string;
+  readonly role: TripMemberRole;
+  readonly actingTripMemberId: string;
+}): TripMember {
+  const actor = getTripMemberById(input.tripId, input.actingTripMemberId);
+
+  if (!actor) {
+    throw new Error("Only a trip admin can manage trip permissions");
+  }
+
+  if (actor.role !== "primary-admin" && actor.role !== "trip-admin") {
+    throw new Error("Only a trip admin can manage trip permissions");
+  }
+
+  const targetIndex = state.tripMembers.findIndex(
+    (member) => member.tripId === input.tripId && member.id === input.tripMemberId
   );
 
-  return match ? cloneTripMember(match) : undefined;
+  if (targetIndex < 0) {
+    throw new Error(`Trip member not found: ${input.tripMemberId}`);
+  }
+
+  const target = state.tripMembers[targetIndex];
+
+  if (!target) {
+    throw new Error(`Trip member not found: ${input.tripMemberId}`);
+  }
+
+  if (target.role === "primary-admin") {
+    throw new Error("The primary admin role cannot be changed");
+  }
+
+  if (input.role === "primary-admin") {
+    throw new Error("Use a dedicated transfer flow to change the primary admin");
+  }
+
+  const updated: TripMember = {
+    ...target,
+    role: input.role,
+    syncStatus: "pending"
+  };
+
+  state.tripMembers[targetIndex] = updated;
+  saveTripIdentityState();
+  return cloneTripMember(updated);
+}
+
+export function acceptTripInvite(input: {
+  readonly inviteToken: string;
+  readonly userEmail: string;
+}): InviteAcceptanceResult {
+  const normalizedEmail = sanitizeEmail(input.userEmail);
+  const targetIndex = state.tripMembers.findIndex((member) => member.inviteToken === input.inviteToken);
+
+  if (targetIndex < 0) {
+    throw new Error("Invite link is invalid or has expired");
+  }
+
+  const target = state.tripMembers[targetIndex];
+
+  if (!target) {
+    throw new Error("Invite link is invalid or has expired");
+  }
+
+  if (sanitizeEmail(target.email) !== normalizedEmail) {
+    throw new Error("Sign in with the invited Google account to accept this trip invite");
+  }
+
+  const acceptedMember: TripMember = {
+    ...target,
+    inviteStatus: "accepted",
+    syncStatus: "pending"
+  };
+
+  state.tripMembers[targetIndex] = acceptedMember;
+  state.selectedTripId = acceptedMember.tripId;
+  saveTripIdentityState();
+
+  return {
+    tripId: acceptedMember.tripId,
+    tripMember: cloneTripMember(acceptedMember)
+  };
+}
+
+export function setTripStatus(input: {
+  readonly tripId: string;
+  readonly status: TripRecord["status"];
+  readonly actingTripMemberId: string;
+}): TripRecord {
+  const actor = getTripMemberById(input.tripId, input.actingTripMemberId);
+
+  if (!actor || (actor.role !== "primary-admin" && actor.role !== "trip-admin")) {
+    throw new Error("Only a trip admin can change trip status");
+  }
+
+  const targetIndex = state.trips.findIndex((trip) => trip.id === input.tripId);
+
+  if (targetIndex < 0) {
+    throw new Error(`Trip not found: ${input.tripId}`);
+  }
+
+  const target = state.trips[targetIndex];
+
+  if (!target) {
+    throw new Error(`Trip not found: ${input.tripId}`);
+  }
+
+  const updated: TripRecord = {
+    ...target,
+    status: input.status,
+    syncStatus: "pending"
+  };
+
+  state.trips[targetIndex] = updated;
+
+  if (state.selectedTripId === updated.id && updated.status === "archived") {
+    state.selectedTripId =
+      state.trips.find((trip) => trip.id !== updated.id && trip.status === "active")?.id ?? updated.id;
+  }
+
+  saveTripIdentityState();
+  return cloneTrip(updated);
 }
 
 export function createTripFromFamilyGroup(input: CreateTripFromFamilyGroupInput): TripRecord {
@@ -434,6 +670,7 @@ export function createTripFromFamilyGroup(input: CreateTripFromFamilyGroupInput)
   });
 
   createSnapshotMembers(trip.id, input.createdByUserId, familyGroup.members);
+  state.selectedTripId = trip.id;
   saveTripIdentityState();
   return cloneTrip(trip);
 }
@@ -452,6 +689,7 @@ export function createTripFromCurrentMembers(input: CreateTripFromCurrentMembers
   });
 
   createSnapshotMembers(trip.id, input.createdByUserId, sourceMembers);
+  state.selectedTripId = trip.id;
   saveTripIdentityState();
   return cloneTrip(trip);
 }
@@ -491,6 +729,7 @@ export function createTripFromDuplicate(input: CreateTripFromDuplicateInput): Tr
   });
 
   createSnapshotMembers(trip.id, input.createdByUserId, sourceMembers);
+  state.selectedTripId = trip.id;
   saveTripIdentityState();
   return cloneTrip(trip);
 }
